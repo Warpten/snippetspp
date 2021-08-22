@@ -1,5 +1,5 @@
 /* 
- * This file is part of the snippetspp distribution (https://github.com/Warpten/snippetspp or http://xxx.github.io).
+ * This file is part of the snippetspp distribution (https://github.com/Warpten/snippetspp).
  * Copyright (c) 2021 Warpten.
  * 
  * This program is free software: you can redistribute it and/or modify  
