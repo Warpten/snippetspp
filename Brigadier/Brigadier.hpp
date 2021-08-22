@@ -257,6 +257,9 @@ namespace Brigadier {
         static auto Extract(StringReader& reader, S const& /* source */) {
             reader.Skip();
             auto result = ArgumentType<std::decay_t<T>>::Read(reader);
+
+            assert(result.Success);
+
             return result.Value;
         }
     };
@@ -345,6 +348,9 @@ namespace Brigadier
 
     Errorable<std::string> StringReader::ReadUnquotedString()
     {
+        if (!CanRead())
+            return Errorable<std::string>::MakeError("Cannot read");
+
         uint32_t startCursor = _cursor;
 
         static auto isAllowedCharacter = [](char c)
