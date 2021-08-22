@@ -94,3 +94,7 @@ struct ArgumentType {
     static Errorable<type> Read(StringReader& reader);
 };
 ```
+
+### Why 'Brigadier' ?
+
+This was inspired by Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
