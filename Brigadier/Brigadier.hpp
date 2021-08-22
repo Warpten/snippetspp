@@ -31,10 +31,6 @@
 #include <fmt/format.h>
 
 namespace Brigadier {
-    namespace Details {
-        template <typename... Ts> void Sink(Ts&&...) { }
-    }
-
     // Forward declarations vvv
 
     template <typename>
@@ -54,8 +50,24 @@ namespace Brigadier {
     template <typename, typename> struct LiteralTreeNode;
     template <typename, typename> struct CommandDispatcher;
 
-    template <typename, typename> struct _ParameterExtractor;
+    template <typename, typename, typename> struct _ParameterExtractor;
 
+    namespace Details {
+        template <typename... Ts> void Sink(Ts&&...) { }
+
+        template <typename T>
+        struct IsErrorable : std::false_type { };
+
+        template <typename T>
+        struct IsErrorable<Errorable<T>> : std::true_type { };
+
+        template <typename T, size_t = sizeof(T)>
+        std::true_type IsCompleteImpl(T*);
+        std::false_type IsCompleteImpl(...);
+
+        template <typename T>
+        using IsComplete = decltype(IsCompleteImpl<T>(std::declval<T*>()));
+    }
 }
 
 namespace Brigadier {
@@ -72,7 +84,7 @@ namespace Brigadier {
     };
 
     template <typename T>
-    struct Errorable final
+    struct Errorable
     {
         bool Success;
         union {
@@ -168,47 +180,52 @@ namespace Brigadier {
         static Errorable<std::optional<T>> Read(StringReader& reader);
     };
 
+    // Prevent user mess.
+    template <typename T> struct ArgumentType<std::optional<std::optional<T>>> : ArgumentType<std::optional<T>> { };
+
     template <typename S, typename R>
     struct LiteralTreeNode
     {
-        LiteralTreeNode(std::string_view literal);
+        LiteralTreeNode(std::string_view literal, LiteralTreeNode<S, R>* parent = nullptr);
 
         LiteralTreeNode(LiteralTreeNode<S, R> const&) = delete;
 
         LiteralTreeNode(LiteralTreeNode&& other) noexcept;
 
-        ParseResult<S, R> Parse(StringReader& reader) const noexcept;
-
+    public: // Tree API
         LiteralTreeNode<S, R>& Then(std::string const& literal);
 
         template <typename F>
         LiteralTreeNode<S, R>& Then(std::string const& literal, F&& fn);
 
-        R Execute(S const& source, StringReader& input) const;
-
         template <typename F>
         LiteralTreeNode<S, R>& Executes(F fn);
 
-        template <typename F, typename... Ts>
-        static R _ApplyCall(F fn, S const& source, StringReader& reader, std::tuple<Ts...>* tpl);
+        LiteralTreeNode<S, R>* GetParent() const { return _parent; }
 
+    private:
+        friend struct CommandDispatcher<S, R>;
+        friend struct ParseResult<S, R>;
+
+        R Execute(S const& source, StringReader& input) const;
+        ParseResult<S, R> Parse(StringReader& reader) const noexcept;
+
+    private:
         template <typename... Ts>
-        auto _ValidateParameters(StringReader& reader, std::tuple<Ts...>* tpl);
-
-        // Extracted as a static method because a lambda would cause
-        // zero-initialization of an auto parameter for no reason
-        // (fixed in C++20 with god-awful syntax)
-        template <typename T>
-        static std::optional<T> _SafeExtractParameter(S const& source, StringReader& reader, size_t& itr, size_t count);
+        static auto _ValidateParameters(StringReader& reader, std::tuple<Ts...>* tpl);
 
         template <typename T, typename... Ts>
         static std::optional<std::string> _ValidateParameters(StringReader& reader, size_t itr, size_t count);
 
+        template <typename F, typename... Ts>
+        static R _ApplyCall(F fn, S const& source, StringReader& reader, LiteralTreeNode<S, R>& self, std::tuple<Ts...>* tpl);
+
     private:
         std::string _literal;
+        LiteralTreeNode<S, R>* _parent;
 
         std::function<ParseResult<S, R>(StringReader&)> _condition;
-        std::function<R(S const&, StringReader&)> _handler;
+        std::function<R(S const&, LiteralTreeNode<S, R>&, StringReader&)> _handler;
 
         std::vector<LiteralTreeNode<S, R>> _children;
     };
@@ -232,7 +249,7 @@ namespace Brigadier {
     };
 
 
-    template <typename S, typename R>
+    template <typename S, typename R = uint32_t>
     struct CommandDispatcher
     {
         R Parse(S const& source, std::string_view string);
@@ -249,28 +266,56 @@ namespace Brigadier {
 
     // Helpers declarations and implementations
     
-    template <typename S, typename T>
+    template <typename S, typename R, typename T>
     struct _ParameterExtractor {
 
         using type = decltype(ArgumentType<std::decay_t<T>>::Read(std::declval<StringReader&>()).Value);
 
-        static auto Extract(StringReader& reader, S const& /* source */) {
+        static auto ExtractValue(StringReader& reader, S const& /* source */, LiteralTreeNode<S, R>& /* node */) {
             reader.Skip();
             auto result = ArgumentType<std::decay_t<T>>::Read(reader);
-
             assert(result.Success);
 
             return result.Value;
         }
+
+        static std::optional<std::string> ValidateInput(StringReader& reader)
+        {
+            reader.Skip();
+            auto result = ArgumentType<std::decay_t<T>>::Read(reader);
+            if (result.Success)
+                return std::nullopt;
+
+            return result.Error;
+        }
     };
 
-    template <typename S>
-    struct _ParameterExtractor<S, S const&> {
+    template <typename S, typename R>
+    struct _ParameterExtractor<S, R, S const&> {
         using type = S const&;
 
-        static S const& Extract(StringReader& /* reader */, S const& source) { return source; }
+        static S const& ExtractValue(StringReader& /* reader */, S const& source, LiteralTreeNode<S, R>& /* node */) { return source; }
+        
+        static std::optional<std::string> ValidateInput(StringReader& /* reader */) {
+            return std::nullopt;
+        }
     };
 
+    template <typename S, typename R>
+    struct _ParameterExtractor<S, R, LiteralTreeNode<S, R>&> {
+        using type = std::reference_wrapper<LiteralTreeNode<S, R>>;
+
+        static std::reference_wrapper<LiteralTreeNode<S, R>> ExtractValue(StringReader& /* reader */, S const& /* source */, LiteralTreeNode<S, R>& node) {
+            return node;
+        }
+                
+        static std::optional<std::string> ValidateInput(StringReader& /* reader */) {
+            return std::nullopt;
+        }
+    };
+
+    // Needs P2041R1 (http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p2041r1.html)
+    // template <typename S, typename R> struct ArgumentType<LiteralTreeNode<S, R>> = delete;
 }
 
 namespace Brigadier
@@ -472,15 +517,19 @@ namespace Brigadier
     // ^^^ StringReader / LiteralTreeNode<S, R> vvv
         
     template <typename S, typename R>
-    LiteralTreeNode<S, R>::LiteralTreeNode(LiteralTreeNode&& other) noexcept: _literal(std::move(other._literal)),
-                                                                              _children(std::move(other._children)),
-                                                                              _condition(std::move(other._condition)),
-                                                                              _handler(std::move(other._handler))
+    LiteralTreeNode<S, R>::LiteralTreeNode(LiteralTreeNode&& other) noexcept
+        : _literal(std::move(other._literal)), _parent(std::move(other._parent)),
+            _condition(std::move(other._condition)), _handler(std::move(other._handler)),
+            _children(std::move(other._children))
     {
+        other._parent = nullptr;
+        other._condition = nullptr;
+        other._handler = nullptr;
     }
 
     template <typename S, typename R>
-    LiteralTreeNode<S, R>::LiteralTreeNode(std::string_view literal): _literal(literal)
+    LiteralTreeNode<S, R>::LiteralTreeNode(std::string_view literal, LiteralTreeNode<S, R>* parent /* = nullptr */)
+        : _literal(literal), _parent(parent)
     {
     }
 
@@ -493,7 +542,7 @@ namespace Brigadier
             return { "Cannot parse input" };
 
         reader.Skip(_literal.length());
-        if (reader.Peek() != ' ')
+        if (reader.CanRead() && reader.Peek() != ' ')
         {
             reader.SetCursor(startIndex);
 
@@ -521,7 +570,7 @@ namespace Brigadier
     template <typename S, typename R>
     LiteralTreeNode<S, R>& LiteralTreeNode<S, R>::Then(std::string const& literal)
     {
-        return _children.emplace_back(literal);
+        return _children.emplace_back(literal, this);
     }
 
     template <typename S, typename R>
@@ -533,7 +582,7 @@ namespace Brigadier
 
     template <typename S, typename R>
     R LiteralTreeNode<S, R>::Execute(S const& source, StringReader& input) const {
-        return _handler(source, input);
+        return _handler(source, const_cast<LiteralTreeNode<S, R>&>(*this), input);
     }
 
     template <typename S, typename R>
@@ -547,44 +596,27 @@ namespace Brigadier
 
         using args_t = boost::callable_traits::args_t<F>;
 
-        if (!_children.empty())
-        {
-            static_assert(!std::is_same_v<Word, std::tuple_element_t<0, args_t>>,
-                "Cannot register a command handler taking a string as first argument when there are subcommands");
-
-            static_assert(!std::is_same_v<std::string, std::tuple_element_t<0, args_t>>,
-                "Cannot register a command handler taking a string as first argument when there are subcommands");
-        }
-
-        using args_t = boost::callable_traits::args_t<F>;
-
-        _condition = [this](StringReader& reader) -> ParseResult<S, R>
-        {
+        _condition = [this](StringReader& reader) noexcept -> ParseResult<S, R> {
             size_t startIndex = reader.GetCursor();
 
-            try
-            {
+            try {
                 auto validationResult = _ValidateParameters(reader, static_cast<args_t*>(nullptr));
-                if (!validationResult.has_value())
-                {
+                if (!validationResult.has_value()) {
                     reader.SetCursor(startIndex);
 
                     return {*this, reader};
                 }
 
                 reader.SetCursor(startIndex);
-                return {validationResult.value()};
-            }
-            catch (std::exception const& ex)
-            {
+                return { validationResult.value() };
+            } catch (std::exception const& ex) {
                 reader.SetCursor(startIndex);
                 return { fmt::format("Unable to parse argument: {}", ex.what()) };
             }
         };
 
-        _handler = [fn](S const& source, StringReader& reader)
-        {
-            return _ApplyCall(fn, source, reader, static_cast<args_t*>(nullptr));
+        _handler = [fn](S const& source, LiteralTreeNode<S, R>& self, StringReader& reader) noexcept {
+            return _ApplyCall(fn, source, reader, self, static_cast<args_t*>(nullptr));
         };
 
         return *this;
@@ -592,10 +624,10 @@ namespace Brigadier
 
     template <typename S, typename R>
     template <typename F, typename ... Ts>
-    R LiteralTreeNode<S, R>::_ApplyCall(F fn, S const& source, StringReader& reader, std::tuple<Ts...>* tpl)
+    R LiteralTreeNode<S, R>::_ApplyCall(F fn, S const& source, StringReader& reader, LiteralTreeNode<S, R>& self, std::tuple<Ts...>* tpl)
     {
         // Syntax matters here. 
-        return std::apply(fn, std::tuple { _ParameterExtractor<S, Ts>::Extract(reader, source)... });
+        return std::apply(fn, std::tuple { _ParameterExtractor<S, R, Ts>::ExtractValue(reader, source, self)... });
     }
 
     template <typename S, typename R>
@@ -606,44 +638,49 @@ namespace Brigadier
     }
 
     template <typename S, typename R>
-    template <typename T>
-    std::optional<T> LiteralTreeNode<S, R>::_SafeExtractParameter(S const& source, StringReader& reader, size_t& itr,
-                                                                  size_t count)
-    {
-        if (itr == count || reader.Peek() != ' ')
-            return std::nullopt;
-
-        ++itr;
-        return _ParameterExtractor<S, T>::Extract(reader, source);
-    }
-
-    template <typename S, typename R>
     template <typename T, typename ... Ts>
     std::optional<std::string> LiteralTreeNode<S, R>::_ValidateParameters(StringReader& reader, size_t itr, size_t count)
     {
         if (itr == count)
             return "Unable to read";
 
-        if constexpr (!ArgumentType<T>::optional)
-        {
-            if (!reader.CanRead() || reader.Peek() != ' ')
-                return "Unable to read: missing required parameter";
-        }
+        // this fails for functions with no arguments from command
+        // eg we get "baz" which parses and leaves StringReader { _str = "baz", _cursor = 3 }
+        // and CanRead() returns false.
+        // We need to somehow be able to differentiate between arguments coming from input and "meta" arguments
+        // coming from context.
+        // Incidentally this is done by ValidateInput() since that returns nullopt for those.
+        // **but** it also returns nullopt if able to read from reader.
+        // **however** if it does so, reader got mutated.
+        // if constexpr (!ArgumentType<T>::optional)
+        // {
+        //     if (!reader.CanRead() || reader.Peek() != ' ')
+        //         return "Unable to read: missing required parameter";
+        // }
 
         if constexpr (ArgumentType<T>::optional && sizeof...(Ts) > 0)
-            static_assert(ArgumentType<std::tuple_element_t<0, std::tuple<Ts...>>>::optional, "Optional parameters must all be the last parameters of a command handler.");
+            static_assert(ArgumentType<std::tuple_element_t<0, std::tuple<Ts...>>>::optional, 
+                "Optional parameters must all be the last parameters of a command handler.");
 
-        if constexpr (!std::is_same_v<std::decay_t<T>, S>)
+        size_t startIndex = reader.GetCursor();
+        std::optional<std::string> result = _ParameterExtractor<S, R, T>::ValidateInput(reader);
+        if (result.has_value())
+            return result;
+
+        /*if (reader.GetCursor() != startIndex && !result.has_value())
         {
-            reader.Skip();
-            auto result = ArgumentType<std::decay_t<T>>::Read(reader);
-            if (!result.Success)
-                return result.Error;
-        }
+            // No error and reader modified. This is likely an actual input parameter.
+            if constexpr (!ArgumentType<T>::optional)
+            {
+                if (reader.CanRead() || reader.Peek() != ' ')
+                    return "Unable to read: missing required parameter";
+            }
+        }*/
 
         if constexpr (sizeof...(Ts) > 0)
             return _ValidateParameters<Ts...>(reader, itr + 1, count);
 
+        // Nothing left to read, all good.
         if (!reader.CanRead())
             return std::nullopt;
 
