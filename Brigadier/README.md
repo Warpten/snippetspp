@@ -98,3 +98,83 @@ struct ArgumentType {
 ### Why 'Brigadier' ?
 
 This was inspired by Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
+
+### I want benchmarks
+
+Here are some completely irrelevant benchmarks.
+```
+|               ns/op |                op/s |    err% |     total | benchmark
+|--------------------:|--------------------:|--------:|----------:|:----------
+|              463.40 |        2,157,942.06 |    2.0% |      5.50 | `foo bar 42 7`
+|              302.51 |        3,305,664.02 |    2.9% |      3.65 | `foo 77`
+|              183.83 |        5,439,775.51 |    1.5% |      2.21 | `foo bar biz 1 b`
+|              441.00 |        2,267,561.79 |    1.7% |      5.28 | `bar 1 b`
+|              358.69 |        2,787,893.48 |    0.9% |      4.29 | `bar 2`
+```
+
+```cpp
+int main() {
+    try {
+        Source source;
+
+        Brigadier::CommandDispatcher<Source, uint32_t> dispatcher;
+
+        dispatcher.Then("foo", [](Source const& source, uint32_t value) noexcept {
+                assert(value == 77);
+                return 0; 
+            })
+            .Then("bar", [](uint32_t a, float b) noexcept {
+                assert(a == 42 && b == 7.0);
+                return 1;
+            })
+            .Then("biz", [](uint32_t a, Brigadier::Word const& b) noexcept {
+                assert(a == 1 && static_cast<std::string>(b) == "b"); 
+                return 2;
+            });
+        dispatcher.Then("bar", [](uint32_t a, std::optional<Brigadier::Word> b) noexcept
+        {
+            assert((a == 1 && b.has_value()) || (a == 2 && !b.has_value()));
+            return 0;
+        });
+
+        dispatcher.Parse(source, "bar 2");
+
+        auto b = ankerl::nanobench::Bench().minEpochIterations(1000000);
+
+        b.run("foo bar 42 7", [&]() {
+            ankerl::nanobench::doNotOptimizeAway(
+                dispatcher.Parse(source, "foo bar 42 7")
+            );
+        });
+
+        b.run("foo 77", [&]() {
+            ankerl::nanobench::doNotOptimizeAway(
+                dispatcher.Parse(source, "foo 77")
+            );
+        });
+
+        b.run("foo bar biz 1 b", [&]() {
+            ankerl::nanobench::doNotOptimizeAway(
+                dispatcher.Parse(source, "foo bar biz 1 b")
+            );
+        });
+
+        b.run("bar 1 b", [&]() {
+            ankerl::nanobench::doNotOptimizeAway(
+                dispatcher.Parse(source, "bar 1 b")
+            );
+        });
+
+        b.run("bar 2", [&]() {
+            ankerl::nanobench::doNotOptimizeAway(
+                dispatcher.Parse(source, "bar 2")
+            );
+        });
+
+        return 0;
+    } catch (std::exception const& /* ex */) {
+    }
+}
+```
+
+Using [Nanobench](https://github.com/martinus/nanobench).
