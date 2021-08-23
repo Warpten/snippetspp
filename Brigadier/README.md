@@ -53,7 +53,7 @@ and each node is capable of interpreting a given number of arguments.
      Signature must be akin to `R(Args...) noexcept`.  
      Arguments supported out of the box are `(u)int(64|32|16)_t`, `float`, `double`, `std::string`.  
      Brigadier also exposes `Word`, `GreedyString` and `QuotedString`, which are explicitely convertible to `std::string`.  
-     You can also inject `Source const&` at any point in the parameters. Usually, for simplicity, keep it in front.
+     You can also inject `Source const&` and/or `LiteralTreeNode<S, R>&` at any point in the parameters. Usually, for simplicity, keep it in front. The latter represents the node executing the command.
   Returns the node created, which is an instance of `LiteralTreeNode<S, R>`.
 
 - `R CommandDispatcher<S, R>::Parse(S const& source, std::string_view string)`
@@ -90,7 +90,8 @@ template <typename T>
 struct ArgumentType {
     using type = T;
     constexpr static const bool optional = false; // This is needed for handling std::optional<T> parameters, but is done out of the box. Leave as is.
-  
+    
+    // Reads data from the input string, returning an optional-esque object containing either an instance of the value read, or an error description.
     static Errorable<type> Read(StringReader& reader);
 };
 ```
@@ -101,7 +102,7 @@ This was inspired by Mojang's [eponymous library](https://github.com/Mojang/brig
 
 ### I want benchmarks
 
-Here are some completely irrelevant benchmarks.
+Here are some completely irrelevant benchmarks, done with [Nanobench](https://github.com/martinus/nanobench), with numbers you should not care about.
 ```
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
@@ -176,5 +177,3 @@ int main() {
     }
 }
 ```
-
-Using [Nanobench](https://github.com/martinus/nanobench).
