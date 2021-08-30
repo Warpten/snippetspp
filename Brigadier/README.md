@@ -11,94 +11,72 @@ A simple command parser.
 ## Usage
 
 ```cpp
-Brigadier::CommandDispatcher<Source, uint32_t> dispatcher;
-dispatcher.Then("foo", [](Source const& source, uint32_t value) noexcept {
-    return 0; 
-})
-.Then("bar", [](uint32_t a, float b) noexcept {
-    return 1;
-})
-.Then("biz", [](uint32_t a, Brigadier::Word const& b) noexcept {
-    return 2;
-});
+constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
+    .Then(
+        Brigadier::Command("foo", [](uint32_t, Brigadier::QuotedString) noexcept { }),
+        Brigadier::Node("bar")
+            .Then(
+                Brigadier::Command("biz", [](S&, uint32_t) noexcept { }),
+            )
+    );
+
+int main() {
+    S source { };
+    Brigadier::StringReader reader(command0);
+    // parse will be nullptr if parsing failed.
+    auto parse = Brigadier::TreeParser<S>::Parse(reader, tree);
+    parse(source);
+}
 ```
 
-The above code registers 3 commands:
+The above code registers 2 commands:
 
 ```
-> foo $x
-> foo bar $x $y
-> foo bar biz $x $y
+> foo foo $x
+> foo bar biz $x
 ```
-
-At its core, a command dipatcher (`Brigadier::CommandDispatcher`) is a syntax tree. Each node has an associated literal,
-and each node is capable of interpreting a given number of arguments.
 
 ## Features
 
-- ✔️ Optional parameters (via `std::optional<T>`)
-- ❌ Redirects
+- ❌ Optional parameters (via `std::optional<T>`)
 - ❌ Command help
+- ❌ Error reporting
 
 ## API
 
-### `CommandDispatcher<S, R>`
-- `S` An object used to pass feedback of a command's execution. This would be your interface display for a game.
-- `R` The type of a command's result code. This is `uint32_t` if unspecified.
+### `Brigadier::Node(std::string_view)`
 
-- `CommandDispatcher<S, R>::Then(std::string_view literal, Callable&& fn)`
-  `CommandDispatcher<S, R>::Then(std::string_view literal)`
-  - `literal`: the literal to look for in a command.
-  - `fn`: The [Callable](https://en.cppreference.com/w/cpp/named_req/Callable) to be called when the command is selected during parsing.  
-     Signature must be akin to `R(Args...) noexcept`.  
-     Arguments supported out of the box are `(u)int(64|32|16)_t`, `float`, `double`, `std::string`.  
-     Brigadier also exposes `Word`, `GreedyString` and `QuotedString`, which are explicitely convertible to `std::string`.  
-     You can also inject `Source const&` and/or `LiteralTreeNode<S, R>&` at any point in the parameters. Usually, for simplicity, keep it in front. The latter represents the node executing the command.
-  Returns the node created, which is an instance of `LiteralTreeNode<S, R>`.
+This creates an object representing a node of the command tree, which typically will hold subnodes.
 
-- `R CommandDispatcher<S, R>::Parse(S const& source, std::string_view string)`
+### `Brigadier::CommandNode<Fn>(std::string_view, Fn&&)`
 
-  `R CommandDispatcher<S, R>::Parse(S const& source, StringReader& reader)`
-  - `source`: The source object.
-  - `string` / `reader`: The input to parse.
-  Returns the result code of the command.
-  Throws `std::logic_error` if the command could not be parsed.
+This creates an object representing an execution point of the command tree.
+- `Fn`
+  A [Callable](https://en.cppreference.com/w/cpp/named_req/Callable) to be called when the command is selected during parsing.  
+  Signature must be akin to `void(Args...) noexcept`.  
+  Arguments supported out of the box are `(u)int(64|32|16)_t`, `float`, `double`, `std::string`.  
+  Brigadier also exposes `Word`, `GreedyString` and `QuotedString`, which are explicitely convertible to `std::string`.  
+  You can also inject `Source const&` or `Source &` at any point in the parameters. Usually, for simplicity, keep it in front.
 
-### `LiteralTreeNode<S, R>`
-- `S` An object used to pass feedback of a command's execution. This would be your interface display for a game.
-- `R` The type of a command's result code. This is `uint32_t` if unspecified.
-- `LiteralTreeNode<S, R>& LiteralTreeNode<S, R>::Executes(F fn)`
-  Sets the [Callable](https://en.cppreference.com/w/cpp/named_req/Callable) to be called when the command is selected during parsing.
-  This should only be called if you called the overload of `Then` that does not accept a callable and you want this to be a command and not a simple node.
-- `LiteralTreeNode<S, R>& LiteralTreeNode<S, R>::Then(std::string const& literal, Callable&& fn)`
-
-  `LiteralTreeNode<S, R>& LiteralTreeNode<S, R>::Then(std::string const& literal)`
-  - `literal`: the literal to look for in a command.
-  - `fn`: The [Callable](https://en.cppreference.com/w/cpp/named_req/Callable) to be called when the command is selected during parsing.  
-     Signature must be akin to `R(Args...) noexcept`.  
-     Arguments supported out of the box are `(u)int(64|32|16)_t`, `float`, `double`, `std::string`.  
-     Brigadier also exposes `Word`, `GreedyString` and `QuotedString`, which are explicitely convertible to `std::string`.  
-     You can also inject `Source const&` at any point in the parameters. Usually, for simplicity, keep it in front.
-  Returns the child node created, which is an instance of `LiteralTreeNode<S, R>`.
-
-### `ArgumentType<T>`
+### `_ParameterExtractor<S, T, Enable = void>`
 
 This object is the main extendability point of Brigadier. It allows you to define your own parameter types and how they should be parsed. The contract for this object looks as follows:
 
 ```cpp
-template <typename T>
-struct ArgumentType {
-    using type = T;
-    constexpr static const bool optional = false; // This is needed for handling std::optional<T> parameters, but is done out of the box. Leave as is.
+template <typename S, typename T>
+struct _ParameterExtractor<S, T> {
+    //> Returns effectively T. For references, wrap in std::ref/std::cref.
+    template <typename Fn>
+    static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept;
     
-    // Reads data from the input string, returning an optional-esque object containing either an instance of the value read, or an error description.
-    static Errorable<type> Read(StringReader& reader);
+    //> Returns true if the parameter could be extracted from input.
+    static auto _TryExtract(StringReader&) noexcept;
 };
 ```
 
 ### Why 'Brigadier' ?
 
-This was inspired by Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
+This was ||inspired by|| ~~stolen from~~ Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
 
 ### I want benchmarks
 
@@ -106,74 +84,60 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 ```
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              463.40 |        2,157,942.06 |    2.0% |      5.50 | `foo bar 42 7`
-|              302.51 |        3,305,664.02 |    2.9% |      3.65 | `foo 77`
-|              183.83 |        5,439,775.51 |    1.5% |      2.21 | `foo bar biz 1 b`
-|              441.00 |        2,267,561.79 |    1.7% |      5.28 | `bar 1 b`
-|              358.69 |        2,787,893.48 |    0.9% |      4.29 | `bar 2`
+|              104.81 |        9,540,767.85 |    3.1% |      1.25 | `foo foo 42 "bar\"itone" (Parsing)`
+|              309.57 |        3,230,277.78 |    2.2% |      3.74 | `foo foo 42 "bar\"itone" (Execute)`
+|              108.66 |        9,202,952.16 |    1.1% |      1.32 | `foo bar biz 42 (Parsing)`
+|              120.65 |        8,288,628.37 |    1.5% |      1.45 | `foo bar biz 42 (Execute)`
+|              131.12 |        7,626,504.58 |    1.6% |      1.60 | `foo bar biz "foo" (Parsing)`
+|              191.85 |        5,212,362.05 |    2.0% |      2.31 | `foo bar biz "foo" (Execute)`
 ```
 
 ```cpp
+constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
+    .Then(
+        Brigadier::Command("foo", [](uint32_t, Brigadier::QuotedString) noexcept { }),
+        Brigadier::Node("bar")
+            .Then(
+                // This is doable but not recommended, since ordering matters.
+                Brigadier::Command("biz", [](uint32_t) noexcept { }),
+                Brigadier::Command("biz", [](S&, Brigadier::QuotedString) noexcept { })
+            )
+    );
+
+constexpr static const char command0[] = "foo foo 42 \"bar\\\"itone\"";
+constexpr static const char command1[] = "foo bar biz 42";
+constexpr static const char command2[] = "foo bar biz \"foo\"";
+
 int main() {
-    try {
-        Source source;
-
-        Brigadier::CommandDispatcher<Source, uint32_t> dispatcher;
-
-        dispatcher.Then("foo", [](Source const& source, uint32_t value) noexcept {
-                assert(value == 77);
-                return 0; 
-            })
-            .Then("bar", [](uint32_t a, float b) noexcept {
-                assert(a == 42 && b == 7.0);
-                return 1;
-            })
-            .Then("biz", [](uint32_t a, Brigadier::Word const& b) noexcept {
-                assert(a == 1 && static_cast<std::string>(b) == "b"); 
-                return 2;
-            });
-        dispatcher.Then("bar", [](uint32_t a, std::optional<Brigadier::Word> b) noexcept
-        {
-            assert((a == 1 && b.has_value()) || (a == 2 && !b.has_value()));
-            return 0;
-        });
-
-        dispatcher.Parse(source, "bar 2");
-
-        auto b = ankerl::nanobench::Bench().minEpochIterations(1000000);
-
-        b.run("foo bar 42 7", [&]() {
+    S source { };
+    auto b = ankerl::nanobench::Bench().minEpochIterations(1000000);
+    
+    auto declareParseBench = [&b, &source](const char* command) {
+        b.run(fmt::format("{} (Parsing)", command), [&]() {
+            Brigadier::StringReader reader(command);
             ankerl::nanobench::doNotOptimizeAway(
-                dispatcher.Parse(source, "foo bar 42 7")
+                (Brigadier::TreeParser<S>::Parse(reader, tree), 0)
             );
-        });
-
-        b.run("foo 77", [&]() {
+        }); 
+    };
+    auto declareExecuteBench = [&b, &source](const char* command) {
+        b.run(fmt::format("{} (Execute)", command), [&]() {
+            Brigadier::StringReader reader(command);
             ankerl::nanobench::doNotOptimizeAway(
-                dispatcher.Parse(source, "foo 77")
+                (Brigadier::TreeParser<S>::Parse(reader, tree)(source), 0)
             );
-        });
+        }); 
+    };
 
-        b.run("foo bar biz 1 b", [&]() {
-            ankerl::nanobench::doNotOptimizeAway(
-                dispatcher.Parse(source, "foo bar biz 1 b")
-            );
-        });
+    declareParseBench(command0);
+    declareExecuteBench(command0);
 
-        b.run("bar 1 b", [&]() {
-            ankerl::nanobench::doNotOptimizeAway(
-                dispatcher.Parse(source, "bar 1 b")
-            );
-        });
+    declareParseBench(command1);
+    declareExecuteBench(command1);
 
-        b.run("bar 2", [&]() {
-            ankerl::nanobench::doNotOptimizeAway(
-                dispatcher.Parse(source, "bar 2")
-            );
-        });
-
-        return 0;
-    } catch (std::exception const& /* ex */) {
-    }
+    declareParseBench(command2);
+    declareExecuteBench(command2);
+    
+    return EXIT_SUCCESS;
 }
 ```
