@@ -13,7 +13,7 @@ A simple command parser.
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
     .Then(
-        Brigadier::Command("foo", [](uint32_t, Brigadier::QuotedString) noexcept { }),
+        Brigadier::Command("foo", [](uint32_t, Brigadier::QuotedString const&) noexcept { }),
         Brigadier::Node("bar")
             .Then(
                 Brigadier::Command("biz", [](S&, uint32_t) noexcept { }),
@@ -38,7 +38,7 @@ The above code registers 2 commands:
 
 ## Features
 
-- ❌ Optional parameters (via `std::optional<T>`)
+- ✔️ Optional parameters (via `std::optional<T>`)
 - ❌ Command help
 - ❌ Error reporting
 
@@ -66,11 +66,9 @@ This object is the main extendability point of Brigadier. It allows you to defin
 template <typename S, typename T>
 struct _ParameterExtractor<S, T> {
     //> Returns effectively T. For references, wrap in std::ref/std::cref.
+    //> If this can fail, prefer returning Errorable<T>.
     template <typename Fn>
     static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept;
-    
-    //> Returns true if the parameter could be extracted from input.
-    static auto _TryExtract(StringReader&) noexcept;
 };
 ```
 
@@ -84,12 +82,9 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 ```
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              104.81 |        9,540,767.85 |    3.1% |      1.25 | `foo foo 42 "bar\"itone" (Parsing)`
-|              309.57 |        3,230,277.78 |    2.2% |      3.74 | `foo foo 42 "bar\"itone" (Execute)`
-|              108.66 |        9,202,952.16 |    1.1% |      1.32 | `foo bar biz 42 (Parsing)`
-|              120.65 |        8,288,628.37 |    1.5% |      1.45 | `foo bar biz 42 (Execute)`
-|              131.12 |        7,626,504.58 |    1.6% |      1.60 | `foo bar biz "foo" (Parsing)`
-|              191.85 |        5,212,362.05 |    2.0% |      2.31 | `foo bar biz "foo" (Execute)`
+|              349.39 |        2,862,132.88 |    1.6% |      4.21 | `foo foo 42 "bar\"itone"`
+|               94.55 |       10,576,454.98 |    2.3% |      1.13 | `foo bar biz 42`
+|              354.27 |        2,822,674.89 |    0.8% |      4.26 | `foo bar biz "foo"`
 ```
 
 ```cpp
@@ -113,30 +108,17 @@ int main() {
     auto b = ankerl::nanobench::Bench().minEpochIterations(1000000);
     
     auto declareParseBench = [&b, &source](const char* command) {
-        b.run(fmt::format("{} (Parsing)", command), [&]() {
+        b.run(command, [&]() {
             Brigadier::StringReader reader(command);
             ankerl::nanobench::doNotOptimizeAway(
-                (Brigadier::TreeParser<S>::Parse(reader, tree), 0)
-            );
-        }); 
-    };
-    auto declareExecuteBench = [&b, &source](const char* command) {
-        b.run(fmt::format("{} (Execute)", command), [&]() {
-            Brigadier::StringReader reader(command);
-            ankerl::nanobench::doNotOptimizeAway(
-                (Brigadier::TreeParser<S>::Parse(reader, tree)(source), 0)
+                Brigadier::TreeParser<S>::Parse(reader, tree, source)
             );
         }); 
     };
 
     declareParseBench(command0);
-    declareExecuteBench(command0);
-
     declareParseBench(command1);
-    declareExecuteBench(command1);
-
     declareParseBench(command2);
-    declareExecuteBench(command2);
     
     return EXIT_SUCCESS;
 }
