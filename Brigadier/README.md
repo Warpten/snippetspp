@@ -73,18 +73,17 @@ struct _ParameterExtractor<S, T> {
 
 ### Why 'Brigadier' ?
 
-This was ||inspired by|| ~~stolen from~~ Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
+This was ~~stolen from~~ inspired by Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
 
 ### I want benchmarks
 
 Here are some completely irrelevant benchmarks, done with [Nanobench](https://github.com/martinus/nanobench), with numbers you should not care about.
-```
+
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
 |              305.33 |        3,275,132.88 |    3.9% |      3.80 | `foo foo 42 "bar\"itone"`
 |               88.03 |       11,359,354.21 |    2.3% |      1.09 | `foo bar biz 42`
 |              354.67 |        2,819,556.39 |    1.8% |      4.31 | `foo bar biz "foo"`
-```
 
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
