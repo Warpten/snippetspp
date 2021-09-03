@@ -23,9 +23,8 @@ constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
 int main() {
     S source { };
     Brigadier::StringReader reader(command0);
-    // parse will be nullptr if parsing failed.
-    auto parse = Brigadier::TreeParser<S>::Parse(reader, tree);
-    parse(source);
+    // parse will be true if parsing was successful.
+    auto parse = Brigadier::TreeParser<S>::Parse(reader, tree, source);
 }
 ```
 
@@ -39,8 +38,8 @@ The above code registers 2 commands:
 ## Features
 
 - ✔️ Optional parameters (via `std::optional<T>`)
+- ❌ Error reporting (In progress)
 - ❌ Command help
-- ❌ Error reporting
 
 ## API
 
@@ -66,7 +65,7 @@ This object is the main extendability point of Brigadier. It allows you to defin
 template <typename S, typename T>
 struct _ParameterExtractor<S, T> {
     //> Returns effectively T. For references, wrap in std::ref/std::cref.
-    //> If this can fail, prefer returning Errorable<T>.
+    //> If this can fail, prefer returning Errorable<T>::MakeSuccess / Errorable<T>::MakeError
     template <typename Fn>
     static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept;
 };
@@ -82,9 +81,9 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 ```
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              349.39 |        2,862,132.88 |    1.6% |      4.21 | `foo foo 42 "bar\"itone"`
-|               94.55 |       10,576,454.98 |    2.3% |      1.13 | `foo bar biz 42`
-|              354.27 |        2,822,674.89 |    0.8% |      4.26 | `foo bar biz "foo"`
+|              305.33 |        3,275,132.88 |    3.9% |      3.80 | `foo foo 42 "bar\"itone"`
+|               88.03 |       11,359,354.21 |    2.3% |      1.09 | `foo bar biz 42`
+|              354.67 |        2,819,556.39 |    1.8% |      4.31 | `foo bar biz "foo"`
 ```
 
 ```cpp
