@@ -104,7 +104,7 @@ namespace Brigadier {
                 auto r { f(std::integral_constant<decltype(Start), Start> { }, std::forward<Args&&>(args)...) };
                 using return_type = decltype(r);
 
-                if constexpr (std::is_convertible_v<return_type, bool>) {
+                if constexpr (std::is_convertible_v<bool, return_type>) {
                     if (!r)
                         return false;
                     
@@ -114,7 +114,7 @@ namespace Brigadier {
                 }
             }
 
-            return true; // Shut up the compiler
+            return false; // Shut up the compiler
         }
 
         template <typename T> struct is_reference_wrapper : std::false_type { };
@@ -161,6 +161,8 @@ namespace Brigadier {
         Errorable(Errorable<T> const&) = delete;
         Errorable(Errorable<T>&&) noexcept = default;
 
+        std::optional<T> AsOptional() const { return _value; }
+
     private:
         std::optional<T> _value;
         std::optional<std::string> _error;
@@ -190,6 +192,12 @@ namespace Brigadier {
 
         Errorable(Errorable<std::string> const&) = delete;
         Errorable(Errorable<std::string>&&) noexcept = default;
+
+        std::optional<std::string> AsOptional() const {
+            if (_success)
+                return _value;
+            return std::nullopt;
+        }
 
     private:
         std::string _value;
@@ -229,11 +237,8 @@ namespace Brigadier {
     template <typename Fn> struct CommandNode;
     struct BareNode;
 
-    template <typename S>
-    struct ParseResult;
-
     struct String {
-        String(std::string_view sv) noexcept : _str(sv) { }
+        String(std::string_view sv) : _str(sv) { }
 
         operator const std::string() const noexcept { return _str; }
         const std::string& AsString() const noexcept { return _str; }
@@ -248,26 +253,8 @@ namespace Brigadier {
         Execute
     };
 
-    struct QuotedString final : String { using String::String; };
-    struct Word final : String { using String::String; };
-
-    struct StringReader final {
-        constexpr StringReader(std::string_view content) noexcept : _content(content) {
-
-        }
-
-        void skip(size_t count = 1) noexcept { _cursor += count; }
-
-        constexpr operator bool() const noexcept { return _cursor <= _content.length(); }
-        constexpr const std::string_view view() const noexcept { return _content.substr(_cursor); }
-
-        constexpr size_t cursor() const noexcept { return _cursor; }
-        constexpr void cursor(size_t cursor) noexcept { _cursor = cursor; }
-
-    private:
-        std::string_view _content;
-        size_t _cursor = 0;
-    };
+    struct QuotedString : String { using String::String; };
+    struct Word : String { using String::String; };
 
     template <typename S, typename T, typename Enable = void>
     struct _ParameterExtractor;
@@ -275,50 +262,50 @@ namespace Brigadier {
     template <typename S, typename T>
     struct _ParameterExtractor<S, T, std::enable_if_t<std::is_integral_v<T>>> {
         template <typename Fn>
-        static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept {
+        static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept {
             T value;
             auto result = std::from_chars(
-                reader.view().data(),
-                reader.view().data() + reader.view().size(),
+                reader.data(),
+                reader.data() + reader.size(),
                 value, 
                 10);
 
             bool success = result.ec == std::errc { };
             if (success) {
-                reader.skip(result.ptr - reader.view().data());
+                reader = result.ptr;
                 return Errorable<T>::MakeSuccess(std::move(value));
             }
 
-            return Errorable<T>::MakeError("Expected integer at offset {}", reader.cursor());
+            return Errorable<T>::MakeError("Expected integer");
         }
     };
 
     template <typename S, typename T>
     struct _ParameterExtractor<S, T, std::enable_if_t<std::is_floating_point_v<T>>> {
         template <typename Fn>
-        static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept {
+        static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept {
             T value;
             auto result = std::from_chars(
-                reader.view().data(),
-                reader.view().data() + reader.view().size(),
+                reader.data(),
+                reader.data() + reader.size(),
                 value,
                 std::chars_format::general | std::chars_format::scientific | std::chars_format::fixed
             );
 
             bool success = result.ec == std::errc { };
             if (success) {
-                reader.skip(result.ptr - reader.view().data());
+                reader = result.ptr;
                 return Errorable<T>::MakeSuccess(std::move(value));
             }
 
-            return Errorable<T>::MakeError("Expected decimal at offset {}", reader.cursor());
+            return Errorable<T>::MakeError("Expected decimal");
         }
     };
 
     template <typename S, typename Fn>
     struct _ParameterExtractor<S, CommandNode<Fn> const&, void> {
         template <typename F = Fn>
-        constexpr static auto _Extract(CommandNode<F> const& node, S&, StringReader&) noexcept {
+        constexpr static auto _Extract(CommandNode<F> const& node, S&, std::string_view&) noexcept {
             return std::cref(node);
         }
     };
@@ -327,19 +314,14 @@ namespace Brigadier {
     struct _ParameterExtractor<S, std::optional<T>, void>
     {
         template <typename F>
-        static auto _Extract(CommandNode<F> const& node, S& source, StringReader& reader) noexcept
+        static auto _Extract(CommandNode<F> const& node, S& source, std::string_view& reader) noexcept
         {
-            // TODO: optimize all of this
-            size_t cursor = reader.cursor();
-
             auto ret = _ParameterExtractor<S, T>::_Extract(node, source, reader);
             if (!ret) {
-                reader.cursor(cursor - 1);
-
+                reader = { reader.data() - 1, reader.size() + 1 };
                 return Errorable<std::optional<T>>::MakeSuccess(std::nullopt);
             }
 
-            reader.cursor(cursor - 1);
             return ret.template Map<std::optional<T>>([](auto value) noexcept {
                 return std::optional<T> { value };
             });
@@ -349,25 +331,24 @@ namespace Brigadier {
     template <typename S>
     struct _ParameterExtractor<S, QuotedString, void> {
         template <typename Fn>
-        static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept {
-            auto&& view = reader.view();
-            bool success = (view[0] == '"' || view[0] == '\'');
+        static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept {
+            bool success = (reader[0] == '"' || reader[0] == '\'');
             if (!success)
-                return Errorable<QuotedString>::MakeError("Expected opening quote at offset {}", reader.cursor());
+                return Errorable<QuotedString>::MakeError("Expected opening quote");
 
-            auto delim = view[0];
+            auto delim = reader[0];
             auto searchIndex = 1;
 
             bool escapes = false;
 
             while (true) {
-                auto pos = view.find(delim, searchIndex);
+                auto pos = reader.find(delim, searchIndex);
                 success = pos != std::string_view::npos;
                 if (!success)
                     return Errorable<QuotedString>::MakeError("Expected closing quote");
 
                 // Escaped, keep searching
-                if (view[pos - 1] == '\\' && view[pos - 2] != '\\') {
+                if (reader[pos - 1] == '\\' && reader[pos - 2] != '\\') {
                     escapes = true;
                     searchIndex = pos + 1;
                     continue;
@@ -378,8 +359,8 @@ namespace Brigadier {
                 }
             }
 
-            std::string data { view.substr(1, searchIndex - 1) };
-            reader.skip(searchIndex);
+            std::string data { reader.substr(1, searchIndex - 1) };
+            reader = reader.substr(searchIndex + 1);
 
             // Remove escape sequences, keep quotes
             if (escapes)
@@ -392,23 +373,23 @@ namespace Brigadier {
     template <typename S>
     struct _ParameterExtractor<S, S&, void> {
         template <typename Fn>
-        constexpr static auto _Extract(CommandNode<Fn> const&, S& source, StringReader& reader) noexcept {
-            reader.cursor(reader.cursor() - 1);
+        constexpr static auto _Extract(CommandNode<Fn> const&, S& source, std::string_view& reader) noexcept {
+            reader = { reader.data() - 1, reader.size() + 1 };
             return std::ref(source);
         }
     };
 
-    struct BareNode final {
-        constexpr BareNode(std::string_view const literal) : _literal(literal) { }
+    struct BareNode {
+        constexpr BareNode(std::string_view const literal) noexcept : _literal(literal) { }
 
         constexpr BareNode(BareNode const&) = default;
         constexpr BareNode(BareNode&&) = default;
 
-        constexpr ValidationResult Validate(StringReader& reader) const noexcept {
-            bool success = reader.view().find(_literal) == 0;
+        constexpr ValidationResult Validate(std::string_view& reader) const noexcept {
+            bool success = reader.find(_literal) == 0;
             
             if (success) {
-                reader.skip(_literal.length());
+                reader = reader.substr(_literal.length());
                 return ValidationResult::Children;
             }
 
@@ -416,7 +397,7 @@ namespace Brigadier {
         }
 
         template <typename... Ts>
-        constexpr Tree<BareNode, Ts...> Then(Ts&&... parameters) const {
+        constexpr Tree<BareNode, Ts...> Then(Ts&&... parameters) const noexcept {
             return Tree { *this, std::forward<Ts&&>(parameters)... };
         }
 
@@ -426,7 +407,7 @@ namespace Brigadier {
     };
 
     template <typename Fn>
-    struct CommandNode final {
+    struct CommandNode {
         constexpr CommandNode(std::string_view literal, Fn&& fn) noexcept : _literal(literal), _fn(fn) {
             static_assert(boost::callable_traits::is_noexcept_v<Fn>, "Function handlers must be noexcept.");
         }
@@ -436,26 +417,20 @@ namespace Brigadier {
 
         //> Returns true if execution succeeded, false otherwise.
         template <typename S>
-        constexpr auto TryExecute(StringReader& reader, S& source) const noexcept
+        constexpr auto TryExecute(std::string_view const& reader, S& source) const noexcept
             -> bool
         {
-            if (reader.view().find(_literal) != 0)
+            if (reader.find(_literal) != 0)
                 return false;
-            
-            size_t cursor = reader.cursor();
-            reader.cursor(cursor + _literal.length());
+
+            auto mutableReader = reader.substr(_literal.length());
 
             using args_t = boost::callable_traits::args_t<Fn>;
             bool success = true;
-            auto args {
-                _ExtractParameters<S>(source, reader, static_cast<args_t*>(nullptr)) 
-            };
+            auto args { _ExtractParameters<S>(source, mutableReader, static_cast<args_t*>(nullptr)) };
 
-            if (!_Validate(args)) {
-                reader.cursor(cursor);
-
+            if (!_Validate(args))
                 return false;
-            }
 
             std::apply(_fn, std::move(args));
             return true;
@@ -466,15 +441,13 @@ namespace Brigadier {
         Fn _fn;
 
         template <typename S, typename... Ts>
-        constexpr auto _ExtractParameters(S& source, StringReader& reader, std::tuple<Ts...>* tpl = nullptr) const noexcept {
-            return std::tuple { 
-                _ExtractParameter<S, Ts>(source, reader)...
-            };
+        constexpr auto _ExtractParameters(S& source, std::string_view& reader, std::tuple<Ts...>* tpl = nullptr) const {
+            return std::tuple {  _ExtractParameter<S, Ts>(source, reader)... };
         }
 
         template <typename S, typename T>
-        constexpr auto _ExtractParameter(S& source, StringReader& reader) const noexcept {
-            reader.skip();
+        constexpr auto _ExtractParameter(S& source, std::string_view& reader) const noexcept {
+            reader = reader.substr(1);
             return _ParameterExtractor<S, T>::_Extract(*this, source, reader);
         }
 
@@ -493,9 +466,23 @@ namespace Brigadier {
     };
 
     template <typename S>
+    struct ParseResult {
+        std::function<void(S const&)> _execution;
+    };
+
+    template <typename S>
     struct TreeParser final {
+        template <typename T>
+        constexpr static auto Parse(std::string_view input, T const root, S& source) noexcept
+            -> bool
+        {
+            auto mutableView { input };
+            return _Parse(mutableView, root, source);
+        }
+
+    private:
         template <typename T, typename... Ts>
-        constexpr static auto Parse(StringReader& reader, Tree<T, Ts...> const root, S& source) noexcept
+        constexpr static auto _Parse(std::string_view& reader, Tree<T, Ts...> const root, S& source) noexcept
             -> bool
         {
             if constexpr (std::is_same_v<T, BareNode>) {
@@ -513,13 +500,13 @@ namespace Brigadier {
                             break;
                         else {
                             // Skip space to next child.
-                            reader.skip(1);
+                            reader = reader.substr(1);
 
                             return ForEachNode<0u>(root._children, [&source](auto node, auto reader) {
-                                return Parse(reader, node, source);
+                                return _Parse(reader, node, source);
                             }, [](auto result) -> bool {
                                 return result != false;
-                            }, std::forward<StringReader&>(reader));
+                            }, std::forward<std::string_view&>(reader));
                         }
                     }
                     case ValidationResult::Execute:
@@ -529,14 +516,15 @@ namespace Brigadier {
 
                 return false;
             } else { // Implied CommandNode<Fn>, Fn hidden here.
-                static_assert(Details::ValidateTree<TEmpty, Ts...>::value, "Malformed tree: command nodes cannot have any children.");
+                static_assert(Details::ValidateTree<TEmpty, Ts...>::value,
+                    "Malformed tree: command nodes cannot have any children.");
 
-                return Parse(reader, root._value, source);
+                return _Parse(reader, root._value, source);
             }
         }
 
         template <typename Fn>
-        constexpr static auto Parse(StringReader& reader, CommandNode<Fn> const& root, S& source) noexcept
+        constexpr static auto _Parse(std::string_view& reader, CommandNode<Fn> const& root, S& source) noexcept
             -> bool
         {
             return root.template TryExecute<S>(reader, source);
@@ -552,7 +540,7 @@ namespace Brigadier {
             Tuple&& tuple,
             Fn&& fn,
             Condition&& condition,
-            Args&&... args) noexcept
+            Args&&... args)
         {
             if constexpr (Details::TupleSize<std::decay_t<Tuple>>::value > 0) {
                 auto result { fn(std::get<I>(tuple), std::forward<Args&&>(args)...) };
@@ -573,11 +561,11 @@ namespace Brigadier {
     };
 
     template <typename Fn>
-    constexpr static CommandNode<Fn> Command(std::string_view literal, Fn&& fn) noexcept {
+    constexpr static CommandNode<Fn> Command(std::string_view literal, Fn&& fn) {
         return CommandNode<Fn> { literal, std::forward<Fn&&>(fn) };
     }
 
-    constexpr static BareNode Node(std::string_view literal) noexcept {
+    constexpr static BareNode Node(std::string_view literal) {
         return BareNode { literal };
     }
 }
