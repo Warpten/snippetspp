@@ -67,7 +67,7 @@ struct _ParameterExtractor<S, T> {
     //> Returns effectively T. For references, wrap in std::ref/std::cref.
     //> If this can fail, prefer returning Errorable<T>::MakeSuccess / Errorable<T>::MakeError
     template <typename Fn>
-    static auto _Extract(CommandNode<Fn> const&, S&, StringReader& reader) noexcept;
+    static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept;
 };
 ```
 
@@ -107,9 +107,8 @@ int main() {
     
     auto declareParseBench = [&b, &source](const char* command) {
         b.run(command, [&]() {
-            Brigadier::StringReader reader(command);
             ankerl::nanobench::doNotOptimizeAway(
-                Brigadier::TreeParser<S>::Parse(reader, tree, source)
+                Brigadier::TreeParser<S>::Parse(command, tree, source)
             );
         }); 
     };
