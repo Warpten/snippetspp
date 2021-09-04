@@ -81,9 +81,9 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              305.33 |        3,275,132.88 |    3.9% |      3.80 | `foo foo 42 "bar\"itone"`
-|               88.03 |       11,359,354.21 |    2.3% |      1.09 | `foo bar biz 42`
-|              354.67 |        2,819,556.39 |    1.8% |      4.31 | `foo bar biz "foo"`
+|              266.82 |        3,747,896.97 |    0.7% |      3.19 | `foo foo 42 "bar\"itone"`
+|              234.23 |        4,269,380.00 |    1.5% |      2.85 | `foo bar biz 42`
+|              255.48 |        3,914,185.25 |    0.3% |      3.05 | `foo bar biz "foo"`
 
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
