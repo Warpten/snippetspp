@@ -6,7 +6,7 @@ A simple command parser.
 
 * C++17 or newer
 * Boost (Boost.CallableTraits, Boost.Range)
-* fmt
+* fmt (or `<format>`)
 
 ## Usage
 
@@ -62,12 +62,12 @@ This creates an object representing an execution point of the command tree.
 This object is the main extendability point of Brigadier. It allows you to define your own parameter types and how they should be parsed. The contract for this object looks as follows:
 
 ```cpp
-template <typename S, typename T>
-struct _ParameterExtractor<S, T> {
+template <typename T>
+struct _ParameterExtractor<T> {
     //> Returns effectively T. For references, wrap in std::ref/std::cref.
     //> If this can fail, prefer returning Errorable<T>::MakeSuccess / Errorable<T>::MakeError
     template <typename Fn>
-    static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept;
+    static auto _Extract(std::string_view& reader) noexcept;
 };
 ```
 
@@ -81,9 +81,9 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              266.82 |        3,747,896.97 |    0.7% |      3.19 | `foo foo 42 "bar\"itone"`
-|              234.23 |        4,269,380.00 |    1.5% |      2.85 | `foo bar biz 42`
-|              255.48 |        3,914,185.25 |    0.3% |      3.05 | `foo bar biz "foo"`
+|              363.47 |        2,751,266.95 |    1.0% |      4.39 | `foo foo 42 "bar\"itone"`
+|               74.44 |       13,434,309.65 |    2.2% |      0.89 | `foo bar biz 42`
+|              223.03 |        4,483,715.56 |    1.9% |      2.68 | `foo bar biz "foo"`
 
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
