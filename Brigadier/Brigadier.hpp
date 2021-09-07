@@ -15,12 +15,22 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
 
-#include <fmt/format.h>
+#if __has_include(<format>) && __cplusplus >= 202002L && defined(__cpp_lib_format)
+# include <format>
+# define BRIGADIER_FORMAT_NAMESPACE std
+#elif __has_include(<fmt/format.h>)
+# include <fmt/format.h>
+# define BRIGADIER_FORMAT_NAMESPACE fmt
+#else
+static_assert(false, "Brigadier requires std::format or fmt::format");
+#endif
 
 #include <array>
 #include <cassert>
 #include <charconv>
+#include <optional>
 #include <functional>
 #include <string_view>
 #include <type_traits>
@@ -29,8 +39,6 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/callable_traits/args.hpp>
 #include <boost/callable_traits/is_noexcept.hpp>
-
-static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
 
 #if __cplusplus >= 202002L
 namespace Brigadier::Details
@@ -104,8 +112,8 @@ namespace Brigadier {
                 auto r { f(std::integral_constant<decltype(Start), Start> { }, std::forward<Args&&>(args)...) };
                 using return_type = decltype(r);
 
-                if constexpr (std::is_convertible_v<bool, return_type>) {
-                    if (!r)
+                if constexpr (std::is_convertible_v<return_type, bool>) {
+                    if (!static_cast<bool>(r))
                         return false;
                     
                     return constexpr_for<Start + Inc, End, Inc, F>(std::forward<F&&>(f), std::forward<Args&&>(args)...);
@@ -114,7 +122,7 @@ namespace Brigadier {
                 }
             }
 
-            return false; // Shut up the compiler
+            return true;
         }
 
         template <typename T> struct is_reference_wrapper : std::false_type { };
@@ -122,17 +130,36 @@ namespace Brigadier {
 
         template <typename T>
         constexpr static const bool is_reference_wrapper_v = is_reference_wrapper<T>::value;
+
+        template <typename T>
+        struct HasParameterExtractor
+        {
+        private:
+            template <typename U>
+            static std::true_type test(decltype(&_ParameterExtractor<U>::_Extract));
+            static std::false_type test(...);
+
+        public:
+            enum { value = decltype(test<T>(0))::value };
+        };
     }
 
     template <typename T>
     struct Errorable final {
         template <typename... Ts>
         static Errorable<T> MakeError(std::string_view fmt, Ts&&... args) noexcept {
-            return Errorable<T> { fmt::format(fmt, std::forward<Ts&&>(args)...) };
+            return Errorable<T> {
+                error_t {},
+                BRIGADIER_FORMAT_NAMESPACE::format(fmt, std::forward<Ts&&>(args)...)
+            };
         }
 
-        static Errorable<T> MakeSuccess(T&& value) noexcept {
-            return Errorable<T> { std::move(value) };
+        template <typename... Ts>
+        static Errorable<T> MakeSuccess(Ts&&... args) noexcept {
+            return Errorable<T> {
+                success_t {},
+                std::forward<Ts&&>(args)...
+            };
         }
 
         constexpr operator bool() const { return _value.has_value(); }
@@ -141,27 +168,31 @@ namespace Brigadier {
         template <typename U>
         Errorable<U> Map(std::function<U(T const&)> fn) const noexcept {
             if (!_value.has_value())
-                return Errorable<U> { _error.value() };
-            return Errorable<U> { std::move(fn(_value.value())) };
+                return Errorable<U>::MakeError(_error.value());
+            return Errorable<U>::MakeSuccess(std::move(fn(_value.value())));
         }
 
         constexpr T const& value() const noexcept { return _value.value(); }
         constexpr T const& value() noexcept { return _value.value(); }
 
-        Errorable(std::string err) noexcept
+        constexpr std::string_view error() const noexcept { return _error.value(); }
+
+        struct error_t {};
+        struct success_t {};
+
+        Errorable(error_t, std::string err) noexcept
             : _value(std::nullopt), _error(std::move(err))
         { }
 
-        Errorable(T&& val) noexcept
-            : _value(std::in_place, val), _error(std::nullopt)
+        template <typename... Ts>
+        Errorable(success_t, Ts&&... args) noexcept
+            : _value(std::in_place, std::forward<Ts&&>(args)...), _error(std::nullopt)
         {
 
         }
 
         Errorable(Errorable<T> const&) = delete;
         Errorable(Errorable<T>&&) noexcept = default;
-
-        std::optional<T> AsOptional() const { return _value; }
 
     private:
         std::optional<T> _value;
@@ -177,7 +208,7 @@ namespace Brigadier {
 
         template <typename... Ts>
         static Errorable<std::string> MakeError(std::string_view fmt, Ts&&... args) noexcept {
-            return Errorable<std::string> { false, fmt::format(fmt, std::forward<Ts&&>(args)...) };
+            return Errorable<std::string> { false, BRIGADIER_FORMAT_NAMESPACE::format(fmt, std::forward<Ts&&>(args)...) };
         }
 
         static Errorable<std::string> MakeSuccess(std::string&& value) noexcept {
@@ -192,12 +223,6 @@ namespace Brigadier {
 
         Errorable(Errorable<std::string> const&) = delete;
         Errorable(Errorable<std::string>&&) noexcept = default;
-
-        std::optional<std::string> AsOptional() const {
-            if (_success)
-                return _value;
-            return std::nullopt;
-        }
 
     private:
         std::string _value;
@@ -238,13 +263,69 @@ namespace Brigadier {
     struct BareNode;
 
     struct String {
-        String(std::string_view sv) : _str(sv) { }
+        String() noexcept {
+            _val = nullptr;
+            _sz = 0;
+            _owning = false;
+        }
 
-        operator const std::string() const noexcept { return _str; }
-        const std::string& AsString() const noexcept { return _str; }
+        explicit String(std::string_view sv) noexcept {
+            _val = const_cast<char*>(sv.data());
+            _sz = sv.length();
+            _owning = false;
+        }
+
+        explicit String(const char* data, size_t sz) noexcept
+        {
+            _val = new char[sz];
+            std::memcpy(_val, data, sz);
+            _sz = sz;
+            _owning = true;
+        }
+
+        String(String&& other) noexcept
+        {
+            _val = other._val;
+            _sz = other._sz;
+            _owning = other._owning;
+
+            other._val = nullptr;
+            other._owning = false;
+            other._sz = 0;
+        }
+
+        String(String const& other) noexcept
+        {
+            if (other._owning)
+            {
+                _val = new char[other._sz];
+                _sz = other._sz;
+                std::memcpy(_val, other._val, other._sz);
+                _owning = true;
+            }
+            else
+            {
+                _val = other._val;
+                _sz = other._sz;
+                _owning = false;
+            }
+        }
+
+        ~String() noexcept {
+            if (_owning)
+                delete[] _val;
+
+            _val = nullptr;
+            _sz = 0;
+            _owning = false;
+        }
+
+        operator const std::string_view() const noexcept { return std::string_view { _val, _sz }; }
 
     private:
-        std::string const _str;
+        char* _val;
+        size_t _sz;
+        bool _owning;
     };
 
     enum class ValidationResult : uint8_t {
@@ -255,14 +336,14 @@ namespace Brigadier {
 
     struct QuotedString : String { using String::String; };
     struct Word : String { using String::String; };
+    struct GreedyString : String { using String::String; };
 
-    template <typename S, typename T, typename Enable = void>
+    template <typename T, typename Enable = void>
     struct _ParameterExtractor;
 
-    template <typename S, typename T>
-    struct _ParameterExtractor<S, T, std::enable_if_t<std::is_integral_v<T>>> {
-        template <typename Fn>
-        static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept {
+    template <typename T>
+    struct _ParameterExtractor<T, std::enable_if_t<std::is_integral_v<T>>> {
+        static auto _Extract(std::string_view& reader) noexcept {
             T value;
             auto result = std::from_chars(
                 reader.data(),
@@ -280,10 +361,9 @@ namespace Brigadier {
         }
     };
 
-    template <typename S, typename T>
-    struct _ParameterExtractor<S, T, std::enable_if_t<std::is_floating_point_v<T>>> {
-        template <typename Fn>
-        static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept {
+    template <typename T>
+    struct _ParameterExtractor<T, std::enable_if_t<std::is_floating_point_v<T>>> {
+        static auto _Extract(std::string_view& reader) noexcept {
             T value;
             auto result = std::from_chars(
                 reader.data(),
@@ -302,36 +382,45 @@ namespace Brigadier {
         }
     };
 
-    template <typename S, typename Fn>
-    struct _ParameterExtractor<S, CommandNode<Fn> const&, void> {
-        template <typename F = Fn>
-        constexpr static auto _Extract(CommandNode<F> const& node, S&, std::string_view&) noexcept {
-            return std::cref(node);
-        }
-    };
-
-    template <typename S, typename T>
-    struct _ParameterExtractor<S, std::optional<T>, void>
-    {
-        template <typename F>
-        static auto _Extract(CommandNode<F> const& node, S& source, std::string_view& reader) noexcept
-        {
-            auto ret = _ParameterExtractor<S, T>::_Extract(node, source, reader);
+    template <typename T>
+    struct _ParameterExtractor<std::optional<T>, void> {
+        static auto _Extract(std::string_view& reader) noexcept {
+            auto ret = _ParameterExtractor<T>::_Extract(reader);
             if (!ret) {
                 reader = { reader.data() - 1, reader.size() + 1 };
                 return Errorable<std::optional<T>>::MakeSuccess(std::nullopt);
             }
 
-            return ret.template Map<std::optional<T>>([](auto value) noexcept {
-                return std::optional<T> { value };
+            return ret.template Map<std::optional<T>>([](auto&& value) noexcept {
+                return std::make_optional(std::move(value));
             });
         }
     };
 
-    template <typename S>
-    struct _ParameterExtractor<S, QuotedString, void> {
-        template <typename Fn>
-        static auto _Extract(CommandNode<Fn> const&, S&, std::string_view& reader) noexcept {
+    template <>
+    struct _ParameterExtractor<Word, void> {
+        static auto _Extract(std::string_view& reader) noexcept {
+            auto pos = reader.find(' ', 0);
+            if (pos == std::string_view::npos)
+                return Errorable<Word>::MakeSuccess(reader);
+
+            if (pos == 0)
+                return Errorable<Word>::MakeError("Empty word found");
+
+            return Errorable<Word>::MakeSuccess(reader.substr(0, pos));
+        }
+    };
+
+    template <>
+    struct _ParameterExtractor<GreedyString, void> {
+        static auto _Extract(std::string_view& reader) noexcept {
+            return Errorable<GreedyString>::MakeSuccess(reader);
+        }
+    };
+
+    template <>
+    struct _ParameterExtractor<QuotedString, void> {
+        static auto _Extract(std::string_view& reader) noexcept {
             bool success = (reader[0] == '"' || reader[0] == '\'');
             if (!success)
                 return Errorable<QuotedString>::MakeError("Expected opening quote");
@@ -359,23 +448,19 @@ namespace Brigadier {
                 }
             }
 
-            std::string data { reader.substr(1, searchIndex - 1) };
+            std::string_view data { reader.substr(1, searchIndex - 1) };
             reader = reader.substr(searchIndex + 1);
 
             // Remove escape sequences, keep quotes
             if (escapes)
-                boost::erase_all(data, "\\");
+            {
+                std::string owningCopy { data };
+                boost::erase_all(owningCopy, "\\");
 
-            return Errorable<QuotedString>::MakeSuccess(QuotedString { std::move(data) });
-        }
-    };
+                return Errorable<QuotedString>::MakeSuccess(owningCopy.c_str(), owningCopy.length());
+            }
 
-    template <typename S>
-    struct _ParameterExtractor<S, S&, void> {
-        template <typename Fn>
-        constexpr static auto _Extract(CommandNode<Fn> const&, S& source, std::string_view& reader) noexcept {
-            reader = { reader.data() - 1, reader.size() + 1 };
-            return std::ref(source);
+            return Errorable<QuotedString>::MakeSuccess(data);
         }
     };
 
@@ -426,14 +511,14 @@ namespace Brigadier {
             auto mutableReader = reader.substr(_literal.length());
 
             using args_t = boost::callable_traits::args_t<Fn>;
+
             bool success = true;
-            auto args { _ExtractParameters<S>(source, mutableReader, static_cast<args_t*>(nullptr)) };
+            auto args { _ExtractParameters<S>(source, success, mutableReader, static_cast<args_t*>(nullptr)) };
 
-            if (!_Validate(args))
-                return false;
+            if (success)
+                std::apply(_fn, std::move(args));
 
-            std::apply(_fn, std::move(args));
-            return true;
+            return success;
         }
 
     private:
@@ -441,18 +526,47 @@ namespace Brigadier {
         Fn _fn;
 
         template <typename S, typename... Ts>
-        constexpr auto _ExtractParameters(S& source, std::string_view& reader, std::tuple<Ts...>* tpl = nullptr) const {
-            return std::tuple {  _ExtractParameter<S, Ts>(source, reader)... };
+        constexpr auto _ExtractParameters(S& source, bool& success, std::string_view& reader, std::tuple<Ts...>* tpl = nullptr) const {
+            return std::tuple {  _ExtractParameter<S, Ts>(source, reader, success)... };
         }
 
         template <typename S, typename T>
-        constexpr auto _ExtractParameter(S& source, std::string_view& reader) const noexcept {
-            reader = reader.substr(1);
-            return _ParameterExtractor<S, T>::_Extract(*this, source, reader);
+        constexpr auto _ExtractParameter(S& source, std::string_view& reader, bool& success) const noexcept {
+            using decayed_type = std::decay_t<T>;
+
+            if constexpr (std::is_same_v<T, S&>) {
+                return std::ref(source);
+            } else if constexpr (std::is_same_v<T, S const&>) {
+                return std::cref(source);
+            } else if constexpr (std::is_same_v<T, CommandNode<Fn>&>) {
+                return std::ref(*this);
+            } else if constexpr (std::is_same_v<T, CommandNode<Fn> const&>) {
+                return std::cref(*this);
+            } else if constexpr (Details::is_optional_v<T>) {
+                using underlying_type = typename T::value_type;
+
+                std::string_view copy { reader.substr(1) };
+                auto result { _ParameterExtractor<underlying_type>::_Extract(copy) };
+                if (result) {
+                    reader = copy;
+                    return std::make_optional<underlying_type>(result.value());
+                }
+
+                return std::optional<underlying_type> { std::nullopt };
+            } else {
+                static_assert(Details::HasParameterExtractor<decayed_type>::value, "Missing implementation of _ParameterExtractor");
+
+                reader = reader.substr(1);
+                auto result { _ParameterExtractor<decayed_type>::_Extract(reader) };
+                success &= !!result;
+                if (!result)
+                    return decayed_type {};
+                return result.value();
+            }
         }
 
         template <typename... Ts>
-        constexpr static bool _Validate(std::tuple<Ts...> const& tpl) noexcept
+        constexpr static auto _Validate(std::tuple<Ts...> const& tpl) noexcept
         {
             return Details::constexpr_for<0u, sizeof...(Ts), 1>([](auto i, auto&& tpl) {
                 using element_type = std::tuple_element_t<i, std::tuple<Ts...>>;
@@ -463,11 +577,6 @@ namespace Brigadier {
                 return true;
             }, tpl);
         }
-    };
-
-    template <typename S>
-    struct ParseResult {
-        std::function<void(S const&)> _execution;
     };
 
     template <typename S>
@@ -495,7 +604,7 @@ namespace Brigadier {
                     {
                         // Iterate each child.
                         // Just call Parse on each child in the tuple `root._children`,
-                        // stopping on the first one that returns a non-null std::function.
+                        // stopping on the first one that works.
                         if constexpr (sizeof...(Ts) == 0)
                             break;
                         else {
