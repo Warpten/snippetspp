@@ -70,7 +70,7 @@ This object is the main extendability point of Brigadier. It allows you to defin
 template <typename T>
 struct _ParameterExtractor<T> {
     //> Returns effectively T. For references, wrap in std::ref/std::cref.
-    //> If this can fail, prefer returning Errorable<T>::MakeSuccess / Errorable<T>::MakeError
+    //> *Always* return an std::optional.
     template <typename Fn>
     static auto _Extract(std::string_view& reader) noexcept;
 };
