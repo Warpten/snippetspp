@@ -50,184 +50,150 @@ namespace Brigadier::Details
     using remove_cvref_t = typename remove_cvref<T>::type;
 }
 #else
-namespace Brigadier
+namespace Brigadier::Details
 {
-    namespace Details
-    {
-        template <typename T>
-        struct remove_cvref {
-            typedef std::remove_cv_t<std::remove_reference_t<T>> type;
-        };
+    template <typename T>
+    struct remove_cvref {
+        typedef std::remove_cv_t<std::remove_reference_t<T>> type;
+    };
 
-        template< class T >
-        using remove_cvref_t = typename remove_cvref<T>::type;
-    }
+    template< class T >
+    using remove_cvref_t = typename remove_cvref<T>::type;
 }
 #endif
 
 namespace Brigadier {
+    template <typename T, typename Enable = void>
+    struct _ParameterExtractor;
+
     namespace Details {
-        template <bool B, bool T, bool F>
-        struct conditional_v;
+        // ---- TupleSize ----
+        // Like std::tuple_size but handles empty tuples properly
+        namespace {
+            template <typename T> struct TupleSize;
+            template <typename... Ts> struct TupleSize<std::tuple<Ts...>> { constexpr static const size_t value = sizeof...(Ts); };
+            template <> struct TupleSize<std::tuple<>> { constexpr static const size_t value = 0; };
+        }
         
-        template <bool T, bool F>
-        struct conditional_v<true, T, F> { constexpr static const bool value = T; };
+        // ---- ValidateTree ----
+        namespace {
+            // Ensures that a tree node has no children or that they are all a given T.
+            template <typename T, typename... Ts>
+            struct ValidateTree {
+                constexpr static const bool value = sizeof...(Ts) == 0
+                    ? true
+                    : (std::is_same_v<T, Ts> && ...);
+            };
+        }
 
-        template <bool T, bool F>
-        struct conditional_v<false, T, F> { constexpr static const bool value = F; };
-
-        template <typename T> struct TupleSize;
-        template <typename... Ts> struct TupleSize<std::tuple<Ts...>> { constexpr static const size_t value = sizeof...(Ts); };
-        template <> struct TupleSize<std::tuple<>> { constexpr static const size_t value = 0; };
-
-        template <typename T, typename... Ts>
-        struct ValidateTree {
-            constexpr static const bool value = conditional_v<
-                sizeof...(Ts) == 0, 
-                true, 
-                (std::is_same_v<T, Ts> && ...)
-            >::value;
-        };
-
-        template <typename T>
-        struct is_optional : std::false_type { };
-
-        template <typename T>
-        struct is_optional<std::optional<T>> : std::true_type { };
-
-        template <typename T>
-        constexpr static const bool is_optional_v = is_optional<T>::value;
+        // ---- is_optional
+        namespace {
+            template <typename T> struct is_optional : std::false_type { };
+            template <typename T> struct is_optional<std::optional<T>> : std::true_type { };
+            template <typename T>
+            constexpr static const bool is_optional_v = is_optional<T>::value;
+        }
 
         template <
-            auto Start,
-            auto End,
-            auto Inc,
-            typename F,
-            typename... Args
-        >
-        constexpr auto constexpr_for(F&& f, Args&&... args)
+            size_t I,
+            typename Tuple, 
+            typename Fn,
+            typename Condition,
+            typename... Args>
+        constexpr static auto Iterate(
+            Tuple&& tuple,
+            Fn&& fn,
+            Condition&& condition,
+            Args&&... args)
         {
-            if constexpr (Start < End)
-            {
-                auto r { f(std::integral_constant<decltype(Start), Start> { }, std::forward<Args&&>(args)...) };
-                using return_type = decltype(r);
-
-                if constexpr (std::is_convertible_v<return_type, bool>) {
-                    if (!static_cast<bool>(r))
-                        return false;
-                    
-                    return constexpr_for<Start + Inc, End, Inc, F>(std::forward<F&&>(f), std::forward<Args&&>(args)...);
-                } else {
-                    return constexpr_for<Start + Inc, End, Inc, F>(std::forward<F&&>(f), std::forward<Args&&>(args)...);
+            if constexpr (Details::TupleSize<std::decay_t<Tuple>>::value > 0) {
+                const auto result { fn(std::get<I>(tuple), std::forward<Args&&>(args)...) };
+                if constexpr (I + 1 == std::tuple_size<std::decay_t<Tuple>>::value)
+                    return result;
+                else {
+                    if (condition(result))
+                        return result;
+                    else
+                        return Iterate<I + 1>(std::forward<Tuple&&>(tuple),
+                            std::forward<Fn&&>(fn),
+                            std::forward<Condition&&>(condition),
+                            std::forward<Args&&>(args)...
+                        );
                 }
             }
-
-            return true;
         }
 
-        template <typename T> struct is_reference_wrapper : std::false_type { };
-        template <typename T> struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type { };
+        // ---- std::is_reference_wrapper ----
+        namespace {
+            template <typename T> struct is_reference_wrapper : std::false_type { };
+            template <typename T> struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type { };
 
-        template <typename T>
-        constexpr static const bool is_reference_wrapper_v = is_reference_wrapper<T>::value;
+            template <typename T>
+            constexpr static const bool is_reference_wrapper_v = is_reference_wrapper<T>::value;
+        }
 
-        template <typename T>
-        struct HasParameterExtractor
-        {
-        private:
-            template <typename U>
-            static std::true_type test(decltype(&_ParameterExtractor<U>::_Extract));
-            static std::false_type test(...);
+        // ---- ParameterIsInput ----
+        // Determines wether a parameter is parsed from the command text.
+        namespace {
+            template <typename T, typename Enable = void> struct ParameterIsInput {
+                enum { value = false };
+            };
 
-        public:
-            enum { value = decltype(test<T>(0))::value };
-        };
+                template <typename U>
+                static std::true_type test(decltype(&_ParameterExtractor<U>::_Extract));
+                static std::false_type test(...);
+
+            template <typename T>
+            struct ParameterIsInput<T, std::enable_if_t<decltype(test<T>(0))::value>>
+            {
+                enum { value = true };
+            };
+            template <typename T>
+            struct ParameterIsInput<std::optional<T>> {
+                enum { value = ParameterIsInput<T>::value };
+            };
+        }
+
+        // ---- FilterHandlerParams ----
+        // Filters types of a tuple based on a conditional, returning a reduced tuple.
+        namespace {
+            template <template <class...> typename Conditional, typename Tuple> struct FilterHandlerParams;
+            template <template <class...> typename Conditional, typename T, typename... Ts>
+            struct FilterHandlerParams<Conditional, std::tuple<T, Ts...>> {
+                using type = std::conditional_t<Conditional<T>::value,
+                    decltype(
+                        std::tuple_cat(
+                            std::declval<std::tuple<T>>(),
+                            std::declval<typename FilterHandlerParams<Conditional, std::tuple<Ts...>>::type
+                            >()
+                        )
+                    ),
+                    typename FilterHandlerParams<Conditional, std::tuple<Ts...>>::type>;
+            };
+            template <template <class...> typename Conditional>
+            struct FilterHandlerParams<Conditional, std::tuple<>> {
+                using type = std::tuple<>;
+            };
+        }
+
+        // ---- ValidateParameterInfo ----
+        // Validations parameter information
+        namespace {
+            template <typename Fn, typename... Ts>
+            struct ValidateParameterInfo
+            {
+                using source_tuple = typename FilterHandlerParams<
+                    ParameterIsInput,
+                    boost::callable_traits::args_t<Fn>
+                >::type;
+                using target_tuple = std::tuple<Ts...>;
+
+                enum {
+                    value = std::is_same_v<source_tuple, target_tuple>
+                };
+            };
+        }
     }
-
-    template <typename T>
-    struct Errorable final {
-        template <typename... Ts>
-        static Errorable<T> MakeError(std::string_view fmt, Ts&&... args) noexcept {
-            return Errorable<T> {
-                error_t {},
-                BRIGADIER_FORMAT_NAMESPACE::format(fmt, std::forward<Ts&&>(args)...)
-            };
-        }
-
-        template <typename... Ts>
-        static Errorable<T> MakeSuccess(Ts&&... args) noexcept {
-            return Errorable<T> {
-                success_t {},
-                std::forward<Ts&&>(args)...
-            };
-        }
-
-        constexpr operator bool() const { return _value.has_value(); }
-        constexpr operator T const& () const { return _value.value(); }
-
-        template <typename U>
-        Errorable<U> Map(std::function<U(T const&)> fn) const noexcept {
-            if (!_value.has_value())
-                return Errorable<U>::MakeError(_error.value());
-            return Errorable<U>::MakeSuccess(std::move(fn(_value.value())));
-        }
-
-        constexpr T const& value() const noexcept { return _value.value(); }
-        constexpr T const& value() noexcept { return _value.value(); }
-
-        constexpr std::string_view error() const noexcept { return _error.value(); }
-
-        struct error_t {};
-        struct success_t {};
-
-        Errorable(error_t, std::string err) noexcept
-            : _value(std::nullopt), _error(std::move(err))
-        { }
-
-        template <typename... Ts>
-        Errorable(success_t, Ts&&... args) noexcept
-            : _value(std::in_place, std::forward<Ts&&>(args)...), _error(std::nullopt)
-        {
-
-        }
-
-        Errorable(Errorable<T> const&) = delete;
-        Errorable(Errorable<T>&&) noexcept = default;
-
-    private:
-        std::optional<T> _value;
-        std::optional<std::string> _error;
-    };
-
-    template <> struct Errorable<std::string> final {
-        operator bool() const { return _success; }
-        operator std::string const& () const { return _value; }
-
-        std::string const& value() const noexcept { return _value; }
-        std::string const& value() noexcept { return _value; }
-
-        template <typename... Ts>
-        static Errorable<std::string> MakeError(std::string_view fmt, Ts&&... args) noexcept {
-            return Errorable<std::string> { false, BRIGADIER_FORMAT_NAMESPACE::format(fmt, std::forward<Ts&&>(args)...) };
-        }
-
-        static Errorable<std::string> MakeSuccess(std::string&& value) noexcept {
-            return Errorable<std::string> { true, std::move(value) };
-        }
-
-        Errorable(bool success, std::string&& value) noexcept
-            : _value(value), _success(success)
-        {
-
-        }
-
-        Errorable(Errorable<std::string> const&) = delete;
-        Errorable(Errorable<std::string>&&) noexcept = default;
-
-    private:
-        std::string _value;
-        bool _success;
-    };
 
     template <typename T, typename... Ts>
     struct Tree {
@@ -275,11 +241,11 @@ namespace Brigadier {
             _owning = false;
         }
 
-        explicit String(const char* data, size_t sz) noexcept
+        explicit String(const std::string& str) noexcept
         {
-            _val = new char[sz];
-            std::memcpy(_val, data, sz);
-            _sz = sz;
+            _val = new char[str.length()];
+            std::memcpy(_val, str.data(), str.length());
+            _sz = str.length();
             _owning = true;
         }
 
@@ -338,12 +304,13 @@ namespace Brigadier {
     struct Word : String { using String::String; };
     struct GreedyString : String { using String::String; };
 
-    template <typename T, typename Enable = void>
-    struct _ParameterExtractor;
-
     template <typename T>
     struct _ParameterExtractor<T, std::enable_if_t<std::is_integral_v<T>>> {
-        static auto _Extract(std::string_view& reader) noexcept {
+        constexpr static const T Default { };
+
+        static auto _Extract(std::string_view& reader) noexcept
+            -> std::optional<T>
+        {
             T value;
             auto result = std::from_chars(
                 reader.data(),
@@ -354,16 +321,20 @@ namespace Brigadier {
             bool success = result.ec == std::errc { };
             if (success) {
                 reader = result.ptr;
-                return Errorable<T>::MakeSuccess(std::move(value));
+                return value;
             }
 
-            return Errorable<T>::MakeError("Expected integer");
+            return std::nullopt;
         }
     };
 
     template <typename T>
     struct _ParameterExtractor<T, std::enable_if_t<std::is_floating_point_v<T>>> {
-        static auto _Extract(std::string_view& reader) noexcept {
+        constexpr static const T Default { };
+
+        static auto _Extract(std::string_view& reader) noexcept
+            -> std::optional<T>
+        {
             T value;
             auto result = std::from_chars(
                 reader.data(),
@@ -375,55 +346,46 @@ namespace Brigadier {
             bool success = result.ec == std::errc { };
             if (success) {
                 reader = result.ptr;
-                return Errorable<T>::MakeSuccess(std::move(value));
+                return value;
             }
 
-            return Errorable<T>::MakeError("Expected decimal");
-        }
-    };
-
-    template <typename T>
-    struct _ParameterExtractor<std::optional<T>, void> {
-        static auto _Extract(std::string_view& reader) noexcept {
-            auto ret = _ParameterExtractor<T>::_Extract(reader);
-            if (!ret) {
-                reader = { reader.data() - 1, reader.size() + 1 };
-                return Errorable<std::optional<T>>::MakeSuccess(std::nullopt);
-            }
-
-            return ret.template Map<std::optional<T>>([](auto&& value) noexcept {
-                return std::make_optional(std::move(value));
-            });
+            return std::nullopt;
         }
     };
 
     template <>
     struct _ParameterExtractor<Word, void> {
-        static auto _Extract(std::string_view& reader) noexcept {
+        static auto _Extract(std::string_view& reader) noexcept
+            -> std::optional<Word>
+        {
             auto pos = reader.find(' ', 0);
             if (pos == std::string_view::npos)
-                return Errorable<Word>::MakeSuccess(reader);
+                return Word { reader };
 
             if (pos == 0)
-                return Errorable<Word>::MakeError("Empty word found");
+                return std::nullopt;
 
-            return Errorable<Word>::MakeSuccess(reader.substr(0, pos));
+            return Word { reader.substr(0, pos) };
         }
     };
 
     template <>
     struct _ParameterExtractor<GreedyString, void> {
-        static auto _Extract(std::string_view& reader) noexcept {
-            return Errorable<GreedyString>::MakeSuccess(reader);
+        static auto _Extract(std::string_view& reader) noexcept
+            -> std::optional<GreedyString>
+        {
+            return GreedyString { reader };
         }
     };
 
     template <>
     struct _ParameterExtractor<QuotedString, void> {
-        static auto _Extract(std::string_view& reader) noexcept {
+        static auto _Extract(std::string_view& reader) noexcept
+            -> std::optional<QuotedString>
+        {
             bool success = (reader[0] == '"' || reader[0] == '\'');
             if (!success)
-                return Errorable<QuotedString>::MakeError("Expected opening quote");
+                return std::nullopt;
 
             auto delim = reader[0];
             auto searchIndex = 1;
@@ -434,7 +396,7 @@ namespace Brigadier {
                 auto pos = reader.find(delim, searchIndex);
                 success = pos != std::string_view::npos;
                 if (!success)
-                    return Errorable<QuotedString>::MakeError("Expected closing quote");
+                    return std::nullopt;
 
                 // Escaped, keep searching
                 if (reader[pos - 1] == '\\' && reader[pos - 2] != '\\') {
@@ -457,10 +419,10 @@ namespace Brigadier {
                 std::string owningCopy { data };
                 boost::erase_all(owningCopy, "\\");
 
-                return Errorable<QuotedString>::MakeSuccess(owningCopy.c_str(), owningCopy.length());
+                return QuotedString { std::move(owningCopy) };
             }
 
-            return Errorable<QuotedString>::MakeSuccess(data);
+            return QuotedString { data };
         }
     };
 
@@ -532,6 +494,7 @@ namespace Brigadier {
 
         template <typename S, typename T>
         constexpr auto _ExtractParameter(S& source, std::string_view& reader, bool& success) const noexcept {
+            
             using decayed_type = std::decay_t<T>;
 
             if constexpr (std::is_same_v<T, S&>) {
@@ -543,41 +506,66 @@ namespace Brigadier {
             } else if constexpr (std::is_same_v<T, CommandNode<Fn> const&>) {
                 return std::cref(*this);
             } else if constexpr (Details::is_optional_v<T>) {
-                using underlying_type = typename T::value_type;
+                static_assert(Details::ParameterIsInput<decayed_type>::value, "Missing implementation of _ParameterExtractor");
 
-                std::string_view copy { reader.substr(1) };
-                auto result { _ParameterExtractor<underlying_type>::_Extract(copy) };
-                if (result) {
-                    reader = copy;
-                    return std::make_optional<underlying_type>(result.value());
+                using underlying_type = typename decayed_type::value_type;
+
+                // If we already failed, fail fast
+                if (success) {
+                    std::string_view copy { reader.substr(1) };
+                    auto result { _ParameterExtractor<underlying_type>::_Extract(copy) };
+                    if (result.has_value())
+                        reader = copy;
+
+                    return result;
                 }
 
-                return std::optional<underlying_type> { std::nullopt };
+                return std::optional<underlying_type> { };
             } else {
-                static_assert(Details::HasParameterExtractor<decayed_type>::value, "Missing implementation of _ParameterExtractor");
+                // If we already failed, fail fast
+                if (!success)
+                    return decayed_type { };
+
+                static_assert(Details::ParameterIsInput<decayed_type>::value, "Missing implementation of _ParameterExtractor");
 
                 reader = reader.substr(1);
                 auto result { _ParameterExtractor<decayed_type>::_Extract(reader) };
-                success &= !!result;
-                if (!result)
-                    return decayed_type {};
-                return result.value();
+                if (result.has_value())
+                    return result.value();
+
+                success = false;
+                return decayed_type { };
             }
         }
-
-        template <typename... Ts>
-        constexpr static auto _Validate(std::tuple<Ts...> const& tpl) noexcept
-        {
-            return Details::constexpr_for<0u, sizeof...(Ts), 1>([](auto i, auto&& tpl) {
-                using element_type = std::tuple_element_t<i, std::tuple<Ts...>>;
-
-                if constexpr (!Details::is_reference_wrapper_v<element_type>)
-                    return !!std::get<i>(tpl);
-                
-                return true;
-            }, tpl);
-        }
     };
+    
+    template <typename U>
+    struct ParameterMeta {
+        constexpr static const bool Required = !Details::is_optional_v<U>;
+        const std::string_view Name;
+
+        using type = U;
+    };
+
+    template <typename Fn, typename... Ts>
+    struct DetailedCommandNode : CommandNode<Fn> {
+        using expected_params_t = boost::callable_traits::args_t<Fn>;
+
+        using Base = CommandNode<Fn>;
+
+        constexpr DetailedCommandNode(std::string_view literal,
+            Fn&& fn,
+            Ts&&... parameters)
+            noexcept
+            : Base(literal, std::forward<Fn&&>(fn)), _parameters({ parameters... })
+        {
+            static_assert(Details::ValidateParameterInfo<Fn, typename Ts::type...>::value,
+                "Parameter informations do not match the command.");
+        }
+
+        std::tuple<Ts...> _parameters;
+    };
+
 
     template <typename S>
     struct TreeParser final {
@@ -611,7 +599,7 @@ namespace Brigadier {
                             // Skip space to next child.
                             reader = reader.substr(1);
 
-                            return ForEachNode<0u>(root._children, [&source](auto node, auto reader) {
+                            return Details::Iterate<0u>(root._children, [&source](auto node, auto reader) {
                                 return _Parse(reader, node, source);
                             }, [](auto result) -> bool {
                                 return result != false;
@@ -639,42 +627,25 @@ namespace Brigadier {
             return root.template TryExecute<S>(reader, source);
         }
 
-        template <
-            size_t I,
-            typename Tuple, 
-            typename Fn,
-            typename Condition,
-            typename... Args>
-        constexpr static auto ForEachNode(
-            Tuple&& tuple,
-            Fn&& fn,
-            Condition&& condition,
-            Args&&... args)
+        template <typename Fn, typename... Ts>
+        constexpr static auto _Parse(std::string_view& reader, DetailedCommandNode<Fn, Ts...> const& root, S& source) noexcept
+            -> bool
         {
-            if constexpr (Details::TupleSize<std::decay_t<Tuple>>::value > 0) {
-                auto result { fn(std::get<I>(tuple), std::forward<Args&&>(args)...) };
-                if constexpr (I + 1 == std::tuple_size<std::decay_t<Tuple>>::value)
-                    return result;
-                else {
-                    if (condition(result))
-                        return result;
-                    else
-                        return ForEachNode<I + 1>(std::forward<Tuple&&>(tuple),
-                            std::forward<Fn&&>(fn),
-                            std::forward<Condition&&>(condition),
-                            std::forward<Args&&>(args)...
-                        );
-                }
-            }
+            return root.template TryExecute<S>(reader, source);
         }
     };
 
     template <typename Fn>
-    constexpr static CommandNode<Fn> Command(std::string_view literal, Fn&& fn) {
+    constexpr static CommandNode<Fn> Command(std::string_view literal, Fn&& fn) noexcept {
         return CommandNode<Fn> { literal, std::forward<Fn&&>(fn) };
     }
 
-    constexpr static BareNode Node(std::string_view literal) {
+    template <typename Fn, typename... Ts>
+    constexpr static DetailedCommandNode<Fn, Ts...> Command(std::string_view literal, Fn&& fn, Ts&&... params) noexcept {
+        return DetailedCommandNode<Fn, Ts...> { literal, std::forward<Fn&&>(fn), std::forward<Ts&&>(params)... };
+    }
+
+    constexpr static BareNode Node(std::string_view literal) noexcept {
         return BareNode { literal };
     }
 }
