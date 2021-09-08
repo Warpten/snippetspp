@@ -13,10 +13,15 @@ A simple command parser.
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
     .Then(
-        Brigadier::Command("foo", [](uint32_t, Brigadier::QuotedString const&) noexcept { }),
+        Brigadier::Command(
+            "foo",
+            [](S const&, uint32_t, std::optional<Brigadier::QuotedString>) noexcept { },
+            Brigadier::ParameterMeta<uint32_t> { "nodeIndex" },
+            Brigadier::ParameterMeta<std::optional<Brigadier::QuotedString>> { "path" }
+        ),
         Brigadier::Node("bar")
             .Then(
-                Brigadier::Command("biz", [](S&, uint32_t) noexcept { }),
+                Brigadier::Command("biz", [](uint32_t) noexcept { }),
             )
     );
 
@@ -81,9 +86,9 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              363.47 |        2,751,266.95 |    1.0% |      4.39 | `foo foo 42 "bar\"itone"`
-|               74.44 |       13,434,309.65 |    2.2% |      0.89 | `foo bar biz 42`
-|              223.03 |        4,483,715.56 |    1.9% |      2.68 | `foo bar biz "foo"`
+|              291.01 |        3,436,338.51 |    0.7% |      3.49 | `foo foo 42 "bar\"itone"`
+|               79.65 |       12,555,412.22 |    1.4% |      0.95 | `foo bar biz 42`
+|              108.62 |        9,206,417.18 |    1.0% |      1.30 | `foo bar biz "foo"`
 
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
