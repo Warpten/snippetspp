@@ -15,13 +15,16 @@ constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
     .Then(
         Brigadier::Command(
             "foo",
+            "This command does X thing",
             [](S const&, uint32_t, std::optional<Brigadier::QuotedString>) noexcept { },
             Brigadier::ParameterMeta<uint32_t> { "nodeIndex" },
             Brigadier::ParameterMeta<std::optional<Brigadier::QuotedString>> { "path" }
         ),
         Brigadier::Node("bar")
             .Then(
+                // This is doable but not recommended: leads to a slew of issues, especially with getting command help.
                 Brigadier::Command("biz", [](uint32_t) noexcept { }),
+                Brigadier::Command("biz", [](S&, Brigadier::QuotedString) noexcept { })
             )
     );
 
@@ -43,8 +46,8 @@ The above code registers 2 commands:
 ## Features
 
 - ✔️ Optional parameters (via `std::optional<T>`)
-- ❌ Error reporting (In progress)
-- ❌ Command help
+- ✔️ Command help
+- ❌ `std::variant<Ts...>` parameters
 
 ## API
 
@@ -52,15 +55,21 @@ The above code registers 2 commands:
 
 This creates an object representing a node of the command tree, which typically will hold subnodes.
 
-### `Brigadier::CommandNode<Fn>(std::string_view, Fn&&)`
+### `Brigadier::Command<Fn>(std::string_view literal, Fn&& fn)`
+### `Brigadier::Command<Fn>(std::string_view literal, std::string_view description, Fn&& fn, parameterInfo...)`
 
 This creates an object representing an execution point of the command tree.
-- `Fn`
+- `literal` The command literal.
+- `description` A short description of the command.
+- `fn`
   A [Callable](https://en.cppreference.com/w/cpp/named_req/Callable) to be called when the command is selected during parsing.  
   Signature must be akin to `void(Args...) noexcept`.  
   Arguments supported out of the box are `(u)int(64|32|16)_t`, `float`, `double`, `std::string`.  
   Brigadier also exposes `Word`, `GreedyString` and `QuotedString`, which are explicitely convertible to `std::string`.  
   You can also inject `Source const&` or `Source &` at any point in the parameters. Usually, for simplicity, keep it in front.
+- `parameterInfo`  
+  One or more of `Brigadier::ParameterMeta<T>`. Must match the order and types of parameters of `fn` that are extracted from the command.  
+  ⚠️ Types are there to ensure you don't screw up when modifying the function handler or vice-versa.
 
 ### `_ParameterExtractor<S, T, Enable = void>`
 
@@ -86,14 +95,22 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              291.01 |        3,436,338.51 |    0.7% |      3.49 | `foo foo 42 "bar\"itone"`
-|               79.65 |       12,555,412.22 |    1.4% |      0.95 | `foo bar biz 42`
-|              108.62 |        9,206,417.18 |    1.0% |      1.30 | `foo bar biz "foo"`
+|              304.65 |        3,282,502.93 |    3.5% |      3.68 | `foo foo 42 "bar\"itone"`
+|               79.91 |       12,513,800.90 |    1.1% |      0.95 | `foo bar biz 42`
+|              111.86 |        8,939,966.65 |    3.0% |      1.42 | `foo bar biz "foo"`
+|               38.29 |       26,115,339.99 |    2.7% |      0.46 | `PrintHelp("foo foo", tree, printer)`
 
 ```cpp
+
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
     .Then(
-        Brigadier::Command("foo", [](uint32_t, Brigadier::QuotedString) noexcept { }),
+        Brigadier::Command(
+            "foo",
+            "This command does X thing",
+            [](S const&, uint32_t, std::optional<Brigadier::QuotedString>) noexcept { },
+            Brigadier::ParameterMeta<uint32_t> { "nodeIndex" },
+            Brigadier::ParameterMeta<std::optional<Brigadier::QuotedString>> { "path" }
+        ),
         Brigadier::Node("bar")
             .Then(
                 // This is doable but not recommended, since ordering matters.
@@ -121,6 +138,13 @@ int main() {
     declareParseBench(command0);
     declareParseBench(command1);
     declareParseBench(command2);
+    
+    HelpPrinter printer;
+    b.run("PrintHelp(\"foo foo\", tree, printer)", [&]() {
+        ankerl::nanobench::doNotOptimizeAway(
+            (Brigadier::TreeParser<S>::PrintHelp("foo foo", tree, printer), 0)
+        );
+    });
     
     return EXIT_SUCCESS;
 }
