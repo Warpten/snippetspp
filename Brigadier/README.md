@@ -100,6 +100,8 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 |              111.86 |        8,939,966.65 |    3.0% |      1.42 | `foo bar biz "foo"`
 |               38.29 |       26,115,339.99 |    2.7% |      0.46 | `PrintHelp("foo foo", tree, printer)`
 
+The help print test is mostly a no-op but shows the cost of traversing a simple tree.
+
 ```cpp
 
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
