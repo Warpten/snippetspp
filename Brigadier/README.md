@@ -95,10 +95,10 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              304.65 |        3,282,502.93 |    3.5% |      3.68 | `foo foo 42 "bar\"itone"`
-|               79.91 |       12,513,800.90 |    1.1% |      0.95 | `foo bar biz 42`
-|              111.86 |        8,939,966.65 |    3.0% |      1.42 | `foo bar biz "foo"`
-|               38.29 |       26,115,339.99 |    2.7% |      0.46 | `PrintHelp("foo foo", tree, printer)`
+|              329.85 |        3,031,640.63 |    1.8% |      3.96 | `Parse(foo foo 42 "bar\"itone", tree, source)`
+|               82.71 |       12,091,050.45 |    1.4% |      0.99 | `Parse(foo bar biz 42, tree, source)`
+|               89.31 |       11,196,771.42 |    2.0% |      1.07 | `Parse(foo bar biz "foo", tree, source)`
+|               28.30 |       35,339,109.54 |    1.0% |      0.33 | `PrintHelp("foo foo", tree, printer)`
 
 The help print test is mostly a no-op but shows the cost of traversing a simple tree.
 
