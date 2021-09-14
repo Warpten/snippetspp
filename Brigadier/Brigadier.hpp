@@ -17,7 +17,17 @@
 
 static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
 
-#if __has_include(<format>) && __cplusplus >= 202002L && defined(__cpp_lib_format)
+#if __cplusplus >= 202002L
+# define BRIGADIER_CPP20
+#else
+# define BRIGADIER_CPP17
+#endif
+
+#if __cpp_concepts >= 201907L
+# define BRIGADIER_CONCEPTS_ENABLED
+#endif
+
+#if defined(BRIGADIER_CPP20) && defined(__cpp_lib_format)
 # include <format>
 # define BRIGADIER_FORMAT_NAMESPACE std
 #elif __has_include(<fmt/format.h>)
@@ -39,9 +49,8 @@ static_assert(false, "Brigadier requires std::format or fmt::format");
 #include <boost/algorithm/string.hpp>
 #include <boost/callable_traits/args.hpp>
 #include <boost/callable_traits/is_noexcept.hpp>
-#include <boost/callable_traits/return_type.hpp>
 
-#if __cplusplus >= 202002L
+#if defined(BRIGADIER_CPP20)
 namespace Brigadier::Details
 {
     template <typename T>
@@ -55,10 +64,10 @@ namespace Brigadier::Details
 {
     template <typename T>
     struct remove_cvref {
-        typedef std::remove_cv_t<std::remove_reference_t<T>> type;
+        using type = std::remove_cv_t<std::remove_reference_t<T>>;
     };
 
-    template< class T >
+    template <typename T>
     using remove_cvref_t = typename remove_cvref<T>::type;
 }
 #endif
@@ -72,30 +81,6 @@ namespace Brigadier {
 
     struct BareNode;
 
-#if __cpp_concepts >= 201907L
-    template <typename T>
-    concept HelpPrinter = requires (const T& t, std::string_view sv, bool b) {
-        { t.NotifyBeginCommand() };
-        { t.NotifyEndCommand() };
-        { t.Notifyliteral(sv) };
-        { t.NotifyPaameter(sv, b) };
-        { t.NotifyCommandDescription(sv) };
-        { t.NotifyParameterDescription(sv, sv, b) };
-    };
-#else
-    struct HelpPrinter {
-        virtual ~HelpPrinter() { }
-
-        virtual void NotifyBeginCommand() = 0;
-        virtual void NotifyEndCommand() = 0;
-
-        virtual void NotifyLiteral(std::string_view literal) = 0;
-        virtual void NotifyParameter(std::string_view name, bool required) = 0;
-        virtual void NotifyCommandDescription(std::string_view description) = 0;
-        virtual void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) = 0;
-    };
-#endif
-
     namespace Details {
         // ---- IsBareNode ----
         namespace {
@@ -105,12 +90,14 @@ namespace Brigadier {
 
         // ---- IsSimpleCommandNode ----
         namespace {
+            //> Determines wether or not T is a specialization of CommandNode<Fn>.
             template <typename T> struct IsSimpleCommandNode : std::false_type { };
             template <typename Fn> struct IsSimpleCommandNode<CommandNode<Fn>> : std::true_type { };
         }
 
         // ---- IsDetailedCommandNode ----
         namespace {
+            //> Determines wether or not T is a specialization of DetailedCommandNode<Fn, ParameterMeta<Ts>...>.
             template <typename T> struct IsDetailedCommandNode : std::false_type { };
             template <typename Fn, typename... Ts> struct IsDetailedCommandNode<DetailedCommandNode<Fn, Ts...>> : std::true_type { };
             template <typename T> struct IsDetailedCommandNode<T const&> : IsDetailedCommandNode<T> { };
@@ -159,60 +146,56 @@ namespace Brigadier {
             constexpr static const bool is_optional_v = is_optional<T>::value;
         }
 
-        /// <summary>
-        /// Iterates over the provided tuple.
-        /// </summary>
-        /// <param name="tuple">The tuple to iterate over</param>
-        /// <param name="fn">A callable of signature R(auto, Args...) where auto will be the tuple member.</param>
-        /// <param name="condition">A Callable of signature bool(R). If it returns true, iteration is aborted early. This is basically an exit condition</param>
-        /// <param name="args">Extra arguments to pass to fn</param>
-        template <
-            size_t I,
-            typename Tuple, 
-            typename Fn,
-            typename Condition,
-            typename... Args>
-        constexpr static auto IterateUntil(
-            Tuple&& tuple,
-            Fn&& fn,
-            Condition&& condition,
-            Args&&... args) noexcept
-        {
-            auto result { fn(std::get<I>(tuple), std::forward<Args&&>(args)...) };
-            if constexpr (I + 1 == std::tuple_size<std::decay_t<Tuple>>::value)
-                return result;
-            else {
-                if (condition(result))
+        template <typename Tuple>
+        struct TupleIterator { };
+
+        template <typename... Ts>
+        struct TupleIterator<std::tuple<Ts...>> {
+            template <typename Fn>
+            constexpr static auto Iterate(std::tuple<Ts...> const& tpl, Fn&& fn) noexcept
+            {
+                return _IterateImpl<0u>(tpl, std::forward<Fn&&>(fn), [](auto result) { return false; });
+            }
+
+            template <typename Fn, typename Condition>
+            constexpr static auto Iterate(std::tuple<Ts...> const& tpl, Fn&& fn, Condition&& condition) noexcept
+            {
+                return _IterateImpl<0u>(tpl, std::forward<Fn&&>(fn), std::forward<Condition&&>(condition));
+            }
+
+            // Make every other use ill-formed.
+            constexpr static void Iterate(...);
+
+        private:
+            template <size_t Idx, typename Fn, typename Condition>
+            constexpr static auto _IterateImpl(std::tuple<Ts...> const& tpl, Fn&& fn, Condition&& condition) noexcept
+                -> decltype(fn(std::get<Idx>(tpl)))
+            {
+                using return_type = decltype(fn(std::get<Idx>(tpl)));
+
+                if constexpr (std::is_void_v<return_type>) {
+                    fn(std::get<Idx>(tpl));
+
+                    if constexpr (Idx + 1 < sizeof...(Ts))
+                        return _IterateImpl<Idx + 1>(tpl, std::forward<Fn&&>(fn), std::forward<Condition&&>(condition));
+                } else {
+                    return_type result { fn(std::get<Idx>(tpl)) };
+                    if (condition(result))
+                        return result;
+                    
+                    if constexpr (Idx + 1 < sizeof...(Ts))
+                        return _IterateImpl<Idx + 1>(tpl, std::forward<Fn&&>(fn), std::forward<Condition&&>(condition));
+
                     return result;
-                else {
-                    return IterateUntil<I + 1>(std::forward<Tuple&&>(tuple),
-                        std::forward<Fn&&>(fn),
-                        std::forward<Condition&&>(condition),
-                        std::forward<Args&&>(args)...
-                    );
                 }
             }
-        }
+        };
 
-        template <
-            size_t I,
-            typename Tuple, 
-            typename Fn,
-            typename... Args>
-        constexpr static auto Iterate(Tuple&& tuple,
-            Fn&& fn,
-            Args&&... args) noexcept
-        {
-            if constexpr (std::tuple_size<std::decay_t<Tuple>>::value > 0) {
-                fn(std::get<I>(tuple), std::forward<Args&&>(args)...);
-                if constexpr (I + 1 != std::tuple_size<std::decay_t<Tuple>>::value)
-                    Iterate<I + 1>(std::forward<Tuple&&>(tuple),
-                        std::forward<Fn&&>(fn),
-                        std::forward<Args&&>(args)...
-                    );
-            }
+        template <typename...Ts, typename... Functions>
+        constexpr auto Iterate(std::tuple<Ts...> const& tuple, Functions&&... functions){
+            return TupleIterator<std::tuple<Ts...>>::template Iterate(tuple, std::forward<Functions&&>(functions)...);
         }
-
+        
         // ---- std::is_reference_wrapper ----
         namespace {
             template <typename T> struct is_reference_wrapper : std::false_type { };
@@ -283,8 +266,56 @@ namespace Brigadier {
                 };
             };
         }
+
+        
+        #if defined(BRIGADIER_CONCEPTS_ENABLED)
+            template <typename T>
+            concept HasNotifyBegin = requires (T& t) {
+                { t.NotifyBeginCommand() } -> std::same_as<void>;
+            };
+            template <typename T>
+            concept HasNotifyEnd = requires (T& t) {
+                { t.NotifyEndCommand() } -> std::same_as<void>;
+            };
+            template <typename T>
+            concept HasNotifyLiteral = requires (T& t, std::string_view sv) {
+                { t.NotifyLiteral(sv) } -> std::same_as<void>;
+            };
+            template <typename T>
+            concept HasNotifyParameter = requires (T& t, std::string_view sv, bool b) {
+                { t.NotifyParameter(sv, b) } -> std::same_as<void>;
+            };
+            template <typename T>
+            concept HasNotifyCommandDescription = requires (T& t, std::string_view sv) {
+                { t.NotifyCommandDescription(sv) } -> std::same_as<void>;
+            };
+            template <typename T>
+            concept HasNotifyParameterDescription = requires (T& t, std::string_view sv, std::optional<std::string_view> osv, bool b) {
+                { t.NotifyParameterDescription(sv, osv, b) } -> std::same_as<void>;
+            };
+        #endif
     }
 
+#if defined(BRIGADIER_CPP17)
+    struct HelpPrinter {
+        virtual ~HelpPrinter() { }
+
+        virtual void NotifyBeginCommand() = 0;
+        virtual void NotifyEndCommand() = 0;
+
+        virtual void NotifyLiteral(std::string_view literal) = 0;
+        virtual void NotifyParameter(std::string_view name, bool required) = 0;
+        virtual void NotifyCommandDescription(std::string_view description) = 0;
+        virtual void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) = 0;
+    };
+#endif
+
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <typeparam name="T">Type of the node</typeparam>
+    /// <typeparam name="Ts">Types of childrend nodes</typeparam>
     template <typename T, typename... Ts>
     struct Tree {
         using value_type = T;
@@ -537,8 +568,7 @@ namespace Brigadier {
             return Tree { *this, std::forward<Ts&&>(parameters)... };
         }
 
-        std::string_view literal() const { return _literal; }
-
+        constexpr std::string_view literal() const { return _literal; }
 
     private:
         std::string_view _literal;
@@ -587,7 +617,6 @@ namespace Brigadier {
 
         template <typename S, typename T>
         constexpr auto _ExtractParameter(S& source, std::string_view& reader, bool& success) const noexcept {
-            
             using decayed_type = std::decay_t<T>;
 
             if constexpr (std::is_same_v<T, S&>) {
@@ -671,7 +700,7 @@ namespace Brigadier {
 
         template <typename Op>
         void ForEachParameter(Op&& fn) const noexcept {
-            Details::Iterate<0u>(_parameters, [fn](auto parameter) {
+            Details::Iterate(_parameters, [fn](auto parameter) {
                 fn(parameter.name(), parameter.description(), decltype(parameter)::Required);
                 return false;
             });
@@ -684,47 +713,83 @@ namespace Brigadier {
 
     template <typename S>
     struct TreeParser final {
-        template <typename T, typename U>
-        struct TreePath final {
-            using node_type = T;
+        template <typename T>
+        struct TreePathBase {
+            constexpr TreePathBase(T const& node) noexcept : _value(node) { }
 
-            constexpr TreePath(T const& node, U const& parent) noexcept : _node(node), _parent(parent) { }
-
-            template <typename V>
-            TreePath<V, TreePath<T, U>> ChainWith(V const& node) const {
-                return TreePath<V, TreePath<T, U>> { node, *this };
+            template <typename Operation>
+            void Traverse(Operation&& operation) const {
+                operation(_value);
             }
 
-            template <typename Op>
-            void Traverse(Op&& fn) const {
-                _parent.Traverse(std::forward<Op&&>(fn));
-                fn(_node);
+            constexpr T const& node() const { return _value; }
+            constexpr std::tuple<> children() const { return std::tuple { }; }
+            constexpr std::size_t childCount() const { return 0; }
+        private:
+            T const& _value;
+        };
+
+        template <typename T, typename... Ts>
+        struct TreePathBase<Tree<T, Ts...>> {
+            constexpr TreePathBase(Tree<T, Ts...> const& node) noexcept : _value(node) { }
+
+            template <typename Operation>
+            void Traverse(Operation&& operation) const {
+                operation(_value._value);
             }
 
-            T const& node() const noexcept { return _node; }
+            constexpr T const& node() const { return _value._value; }
+            constexpr std::tuple<Ts...> const& children() const { return _value._children; }
+            constexpr std::size_t childCount() const { return sizeof...(Ts); }
 
         private:
-            T const& _node;
-            U const& _parent;
+            Tree<T, Ts...> const& _value;
+        };
+
+        /// <typeparam name="T">Type of this node of the path.</typeparam>
+        /// <typeparam name="P">Type of the parent in this path. *will* be TreePath<X, Y>.
+        template <typename T, typename P>
+        struct TreePath final : TreePathBase<T> {
+            using Base = TreePathBase<T>;
+
+            constexpr TreePath(T const& node, P const& parent) noexcept : Base(node), _parent(parent) { }
+
+            template <typename V>
+            TreePath<V, TreePath<T, P>> ChainWith(V const& node) const {
+                return TreePath<V, TreePath<T, P>> { node, *this };
+            }
+
+            template <typename Operation>
+            void Traverse(Operation&& operation) const {
+                _parent.Traverse(std::forward<Operation&&>(operation));
+                Base::Traverse(std::forward<Operation&&>(operation));
+            }
+
+            constexpr auto children() const { return Base::children(); }
+
+        private:
+            P const& _parent;
         };
 
         template <typename T>
-        struct TreePath<T, void> final {
-            using node_type = T;
+        struct TreePath<T, void> final : TreePathBase<T> {
+            using Base = TreePathBase<T>;
 
-            constexpr explicit TreePath(T const& node) noexcept : _node(node) { }
+            constexpr explicit TreePath(T const& node) noexcept : Base(node) { }
 
             template <typename V>
             TreePath<V, TreePath<T, void>> ChainWith(V const& node) const {
                 return TreePath<V, TreePath<T, void>> { node, *this };
             }
+            
+            template <typename Operation>
+            void Traverse(Operation&& operation) const {
+                Base::Traverse(std::forward<Operation&&>(operation));
+            }
 
-            template <typename Op>
-            void Traverse(Op&& op) const { op(_node); }
-
-            T const& node() const noexcept { return _node; }
-        private:
-            T const& _node;
+            constexpr auto node() const { return Base::node(); }
+            constexpr auto children() const { return Base::children(); }
+            constexpr std::size_t childCount() const { return Base::childCount(); }
         };
 
         template <typename T>
@@ -733,98 +798,91 @@ namespace Brigadier {
         {
             TreePath<T, void> rootPath { root };
 
-            return _ProcessImpl<bool>(input, std::move(rootPath), [&source](auto treePath, std::string_view reader) noexcept -> bool {
+            return _ProcessImpl(input, std::move(rootPath), [&source](auto treePath, std::string_view reader) noexcept -> bool {
                 return treePath.node().template TryExecute<S>(reader, source);
             });
         }
 
-#if __cpp_lib_concepts >= 201907L
+#if defined(BRIGADIER_CONCEPTS_ENABLED)
         template <typename T, typename U>
         constexpr static auto PrintHelp(std::string_view input, T const& root, U& printer) noexcept
 #else
         template <typename T>
         constexpr static auto PrintHelp(std::string_view input, T const& root, HelpPrinter& printer) noexcept
 #endif
-            -> void
         {
-#if __cpp_lib_concepts >= 201907L
-            static_assert(HelpPrinter<U>, "Printer lacks complete definition");
+#if defined(BRIGADIER_CONCEPTS_ENABLED)
+            static_assert(Details::HasNotifyBegin<U>, "'printer' needs `void NotifyBegin()`.");
+            static_assert(Details::HasNotifyEnd<U>, "'printer' needs `void NotifyEnd()`.");
+            static_assert(Details::HasNotifyLiteral<U>, "'printer' needs `void NotifyLiteral(std::string_view)`.");
+            static_assert(Details::HasNotifyParameter<U>, "'printer' needs `void NotifyParameter(std::string_view, bool)`.");
+            static_assert(Details::HasNotifyCommandDescription<U>, "'printer' needs `void NotifyCommandDescription(std::string_view)`.");
+            static_assert(Details::HasNotifyParameterDescription<U>, "'printer' needs `void NotifyParameterDescription(std::string_view, std::optional<std::string_view>, bool)`.");
 #endif
 
             TreePath<T, void> rootPath { root };
 
-            return _ProcessImpl<void>(input, std::move(rootPath), [&printer](auto treePath, std::string_view) noexcept -> void {
-                printer.NotifyBeginCommand();
-                treePath.Traverse([&printer](auto node) {
-                    if constexpr (Details::IsTree<decltype(node)>::value)
-                        printer.NotifyLiteral(node._value.literal());
-                    else if constexpr (Details::IsNode<decltype(node)>::value)
-                        printer.NotifyLiteral(node.literal());
-                });
-
-                if constexpr (Details::IsTree<decltype(treePath.node())>::value) {
-                    if constexpr (Details::IsDetailedCommandNode<decltype(treePath.node()._value)>::value) {
-                        treePath.node()._value.ForEachParameter([&printer](auto name, auto description, auto required) {
-                            printer.NotifyParameter(name, required);
-                        });
-
-                        printer.NotifyCommandDescription(treePath.node()._value.description());
-
-                        treePath.node()._value.ForEachParameter([&printer](auto name, auto description, auto required) {
-                            printer.NotifyParameterDescription(name, description, required);
-                        });
-                    } else if constexpr (Details::IsSimpleCommandNode<decltype(treePath.node()._value)>::value) {
-                        printer.NotifyParameter("parameters...", true);
-                    } else if constexpr (Details::IsBareNode<decltype(treePath.node()._value)>::value) {
-                        // TODO: Implement help printing for subcommands (recursively!)
-                    }
-                } else {
-                    if constexpr (Details::IsDetailedCommandNode<decltype(treePath.node())>::value) {
-                        treePath.node().ForEachParameter([&printer](auto name, auto description, auto required) {
-                            printer.NotifyParameter(name, required);
-                        });
-                        
-                        printer.NotifyCommandDescription(treePath.node().description());
-
-                        treePath.node().ForEachParameter([&printer](auto name, auto description, auto required) {
-                            printer.NotifyParameterDescription(name, description, required);
-                        });
-                    } else if constexpr (Details::IsSimpleCommandNode<decltype(treePath.node())>::value) {
-                        printer.NotifyParameter("parameters...", true);
-                    } else if constexpr (Details::IsBareNode<decltype(treePath.node())>::value) {
-                        // TODO: Implement help printing for subcommands (recursively!)
-                    }
-                }
-
-                printer.NotifyEndCommand();
+            return _ProcessImpl(input, std::move(rootPath), [&printer](auto treePath, std::string_view) noexcept -> void {
+                _PrintCallback(printer, treePath, true);
             });
         }
 
     private:
-        template <typename R, typename Operation, typename N, typename P, typename... Ts>
-        constexpr static auto _ProcessImpl(std::string_view reader, TreePath<Tree<N, Ts...>, P>&& pathNode, Operation&& operation) noexcept
-            -> R
-        {
-            using return_type = R;
+        template <typename Printer, typename Path>
+        constexpr static void _PrintCallback(Printer&& printer, Path&& path, bool detailed) {
+            auto currentNode { path.node() };
 
-            if constexpr (std::is_same_v<N, BareNode>)
+            if constexpr (Details::IsDetailedCommandNode<decltype(currentNode)>::value || Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
+                printer.NotifyBeginCommand();
+
+                path.Traverse([&printer](auto pathNode) {
+                    static_assert(Details::IsNode<decltype(pathNode)>::value, "Traverse ill-formed");
+
+                    printer.NotifyLiteral(pathNode.literal());
+                });
+
+                if constexpr (Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
+                    printer.NotifyParameter("parameters...", true);
+                } else { // if constexpr (Details::IsDetailedCommandNode<Node>::value)
+                    currentNode.ForEachParameter([&printer](std::string_view name, auto&& description, bool required) noexcept -> void {
+                        printer.NotifyParameter(name, required);
+                    });
+
+                    if (detailed) {
+                        printer.NotifyCommandDescription(currentNode.description());
+
+                        currentNode.ForEachParameter([&printer](auto name, auto&& description, auto required) {
+                            printer.NotifyParameterDescription(name, description, required);
+                        });
+                    }
+                }
+
+                printer.NotifyEndCommand();
+            } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && path.childCount() > 0) {
+                Details::Iterate(path.children(), [&printer](auto childNode) -> void {
+                    _PrintCallback(std::forward<Printer&&>(printer), childNode, false);
+                });
+            }
+        }
+        
+        template <typename Operation, typename N, typename P>
+        constexpr static auto _ProcessImpl(std::string_view reader, TreePath<N, P>&& path, Operation&& operation) noexcept
+            -> decltype(operation(path, reader))
+        {
+            using return_type = decltype(operation(path, reader));
+
+            if constexpr (std::is_same_v<decltype(path.node()), BareNode>)
             {
-                ValidationResult validationResult { pathNode.node()._value.Validate(reader) };
+                ValidationResult validationResult { path.node().Validate(reader) };
                 switch (validationResult)
                 {
                     case ValidationResult::Children:
                     {
-                        if constexpr (std::is_void_v<return_type>) {
-                            return Details::Iterate<0u>(pathNode.node()._children,
-                                [&pathNode, &operation](auto childNode, auto reader) noexcept -> return_type {
-                                    return _ProcessImpl<R>(reader, pathNode.ChainWith(childNode), operation);
-                                }, reader.substr(1));
-                        } else {
-                            return Details::IterateUntil<0u>(pathNode.node()._children,
-                                [&pathNode, &operation](auto childNode, auto reader) noexcept -> return_type {
-                                    return _ProcessImpl<R>(reader, pathNode.ChainWith(childNode), operation);
-                                }, [](auto r) { return r == true; }, reader.substr(1));
-                        }
+                        return Details::Iterate(path.children(), [&path, &operation, subReader = reader.substr(1)](auto childNode) {
+                            return _ProcessImpl(subReader, path.ChainWith(childNode), std::forward<Operation&&>(operation));
+                        }, [](auto result) {
+                            return result == true;
+                        });
                     }
                     case ValidationResult::Execute:
                         assert(false && "Unreachable");
@@ -836,43 +894,9 @@ namespace Brigadier {
                 if constexpr (!std::is_void_v<return_type>)
                     return return_type { };
             } else {
-                return operation(pathNode, reader);
+                return operation(path, reader);
             }
         }
-
-        template <typename R, typename Operation, typename N, typename P>
-        constexpr static auto _ProcessImpl(std::string_view reader, TreePath<N, P>&& pathNode, Operation&& operation) noexcept
-            -> R
-        {
-            using return_type = R;
-
-            // static_assert(IsPathToBareNode);
-            if constexpr(std::is_same_v<N, BareNode>)
-            {
-                ValidationResult validationResult { pathNode.node().Validate(reader) };
-                switch (validationResult)
-                {
-                    case ValidationResult::Children:
-                    {
-                        return Details::Iterate<0u>(pathNode.node()._children,
-                            [&pathNode, &operation](auto childNode, auto reader) noexcept -> R {
-                                return _ProcessImpl<R>(reader, pathNode.ChainWith(childNode), operation);
-                            }, [](auto r) { return r == true; },  reader.substr(1));
-                    }
-                    case ValidationResult::Execute:
-                        assert(false && "Unreachable");
-                        break;
-                    default:
-                        break;
-                }
-
-                if constexpr (!std::is_void_v<return_type>)
-                    return return_type { };
-            } else {
-                return operation(pathNode, reader);
-            }
-        }
-
     };
 
     template <typename Fn>
@@ -889,3 +913,17 @@ namespace Brigadier {
         return BareNode { literal };
     }
 }
+
+#if defined(BRIGADIER_CONCEPTS_ENABLED)
+# undef BRIGADIER_CONCEPTS_ENABLED
+#endif
+
+#if defined(BRIGADIER_CPP20)
+# undef BRIGADIER_CPP20
+#elif defined(BRIGADIER_CPP17)
+# undef BRIGADIER_CPP17
+#endif
+
+#if defined(BRIGADIER_FORMAT_NAMESPACE)
+# undef BRIGADIER_FORMAT_NAMESPACE
+#endif
