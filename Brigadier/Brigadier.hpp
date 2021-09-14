@@ -724,7 +724,8 @@ namespace Brigadier {
 
             constexpr T const& node() const { return _value; }
             constexpr std::tuple<> children() const { return std::tuple { }; }
-            constexpr std::size_t childCount() const { return 0; }
+
+            constexpr static const std::size_t childCount = 0;
         private:
             T const& _value;
         };
@@ -740,7 +741,8 @@ namespace Brigadier {
 
             constexpr T const& node() const { return _value._value; }
             constexpr std::tuple<Ts...> const& children() const { return _value._children; }
-            constexpr std::size_t childCount() const { return sizeof...(Ts); }
+
+            constexpr static const std::size_t childCount = sizeof...(Ts);
 
         private:
             Tree<T, Ts...> const& _value;
@@ -789,7 +791,6 @@ namespace Brigadier {
 
             constexpr auto node() const { return Base::node(); }
             constexpr auto children() const { return Base::children(); }
-            constexpr std::size_t childCount() const { return Base::childCount(); }
         };
 
         template <typename T>
@@ -799,7 +800,7 @@ namespace Brigadier {
             TreePath<T, void> rootPath { root };
 
             return _ProcessImpl(input, std::move(rootPath), [&source](auto treePath, std::string_view reader) noexcept -> bool {
-                return treePath.node().template TryExecute<S>(reader, source);
+                return treePath.node().TryExecute(reader, source);
             });
         }
 
@@ -858,7 +859,7 @@ namespace Brigadier {
                 }
 
                 printer.NotifyEndCommand();
-            } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && path.childCount() > 0) {
+            } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && std::decay_t<decltype(path)>::childCount > 0) {
                 Details::Iterate(path.children(), [&printer](auto childNode) -> void {
                     _PrintCallback(std::forward<Printer&&>(printer), childNode, false);
                 });
@@ -871,7 +872,7 @@ namespace Brigadier {
         {
             using return_type = decltype(operation(path, reader));
 
-            if constexpr (std::is_same_v<decltype(path.node()), BareNode>)
+            if constexpr (std::is_same_v<std::decay_t<decltype(path.node())>, BareNode>)
             {
                 ValidationResult validationResult { path.node().Validate(reader) };
                 switch (validationResult)
