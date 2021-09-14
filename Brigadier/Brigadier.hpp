@@ -80,6 +80,8 @@ namespace Brigadier {
     template <typename Fn, typename... Ts> struct DetailedCommandNode;
 
     struct BareNode;
+    
+    inline constexpr struct TEmpty { } Empty;
 
     namespace Details {
         // ---- IsBareNode ----
@@ -267,48 +269,61 @@ namespace Brigadier {
             };
         }
 
+        using namespace std::string_view_literals;
         
-        #if defined(BRIGADIER_CONCEPTS_ENABLED)
-            template <typename T>
-            concept HasNotifyBegin = requires (T& t) {
-                { t.NotifyBeginCommand() } -> std::same_as<void>;
-            };
-            template <typename T>
-            concept HasNotifyEnd = requires (T& t) {
-                { t.NotifyEndCommand() } -> std::same_as<void>;
-            };
-            template <typename T>
-            concept HasNotifyLiteral = requires (T& t, std::string_view sv) {
-                { t.NotifyLiteral(sv) } -> std::same_as<void>;
-            };
-            template <typename T>
-            concept HasNotifyParameter = requires (T& t, std::string_view sv, bool b) {
-                { t.NotifyParameter(sv, b) } -> std::same_as<void>;
-            };
-            template <typename T>
-            concept HasNotifyCommandDescription = requires (T& t, std::string_view sv) {
-                { t.NotifyCommandDescription(sv) } -> std::same_as<void>;
-            };
-            template <typename T>
-            concept HasNotifyParameterDescription = requires (T& t, std::string_view sv, std::optional<std::string_view> osv, bool b) {
-                { t.NotifyParameterDescription(sv, osv, b) } -> std::same_as<void>;
-            };
-        #endif
-    }
+#if !defined(BRIGADIER_CONCEPTS_ENABLED)
+        template <typename T>
+        concept HasNotifyBegin = requires (T& t) {
+            { t.NotifyBeginCommand() } -> std::same_as<void>;
+        };
+        template <typename T>
+        concept HasNotifyEnd = requires (T& t) {
+            { t.NotifyEndCommand() } -> std::same_as<void>;
+        };
+        template <typename T>
+        concept HasNotifyLiteral = requires (T& t) {
+            { t.NotifyLiteral("foo"sv) } -> std::same_as<void>;
+        };
+        template <typename T>
+        concept HasNotifyParameter = requires (T& t) {
+            { t.NotifyParameter("foo"sv, true) } -> std::same_as<void>;
+        };
+        template <typename T>
+        concept HasNotifyCommandDescription = requires (T& t) {
+            { t.NotifyCommandDescription("foo"sv) } -> std::same_as<void>;
+        };
+        template <typename T>
+        concept HasNotifyParameterDescription = requires (T& t) {
+            { t.NotifyParameterDescription("foo"sv, std::optional<std::string_view> { }, true) } -> std::same_as<void>;
+        };
+        template <typename T>
+        concept HasNotifyTemplateParameterDescription = requires (T& t) {
+            { t.template NotifyParameterDescription<TEmpty>("foo"sv, std::optional<std::string_view> { }, true) } -> std::same_as<void>;
+        };
+#else
+        namespace {
+            template <typename> struct SFINAE : std::true_type { };
+#define MAKE_PSEUDO_CONCEPT(CONCEPT, FNCALL)                                                             \
+            template <typename T>                                                                        \
+            static auto test_ ## CONCEPT ## (int) -> SFINAE<decltype(std::declval<T>(). ## FNCALL ## )>; \
+                                                                                                         \
+            template <typename>                                                                          \
+            static auto test_ ## CONCEPT ## (long) -> std::false_type;                                   \
+                                                                                                         \
+            template <typename T>                                                                        \
+            constexpr static const bool CONCEPT = decltype(test_ ## CONCEPT ## <T>(0))::value;
 
-#if defined(BRIGADIER_CPP17)
-    struct HelpPrinter {
-        virtual ~HelpPrinter() { }
-
-        virtual void NotifyBeginCommand() = 0;
-        virtual void NotifyEndCommand() = 0;
-
-        virtual void NotifyLiteral(std::string_view literal) = 0;
-        virtual void NotifyParameter(std::string_view name, bool required) = 0;
-        virtual void NotifyCommandDescription(std::string_view description) = 0;
-        virtual void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) = 0;
-    };
+            MAKE_PSEUDO_CONCEPT(HasNotifyBegin, NotifyBeginCommand());
+            MAKE_PSEUDO_CONCEPT(HasNotifyEnd, NotifyEndCommand());
+            MAKE_PSEUDO_CONCEPT(HasNotifyLiteral, NotifyLiteral("foo"sv));
+            MAKE_PSEUDO_CONCEPT(HasNotifyParameter, NotifyParameter("foo"sv, true));
+            MAKE_PSEUDO_CONCEPT(HasNotifyCommandDescription, NotifyCommandDescription("foo"sv));
+            MAKE_PSEUDO_CONCEPT(HasNotifyParameterDescription, NotifyParameterDescription("foo"sv, std::optional<std::string_view> { }, true));
+            MAKE_PSEUDO_CONCEPT(HasNotifyTemplateParameterDescription, template NotifyParameterDescription<TEmpty>("foo"sv, std::optional<std::string_view> { }, true));
+#undef MAKE_PSEUDO_CONCEPT
+        }
 #endif
+    }
 
 
     /// <summary>
@@ -342,8 +357,6 @@ namespace Brigadier {
             );
         }
     };
-
-    inline constexpr struct TEmpty { } Empty;
 
     template<class ValueT, class... Children>
     Tree(ValueT&&, Children&&... c) -> Tree<Details::remove_cvref_t<ValueT>, Details::remove_cvref_t<Children>...>;
@@ -672,6 +685,7 @@ namespace Brigadier {
 
         constexpr const std::string_view name() const { return _name; }
         constexpr std::optional<const std::string_view> const& description() const noexcept { return _description; }
+        constexpr bool required() const { return Required; }
 
     private:
         const std::string_view _name;
@@ -700,10 +714,7 @@ namespace Brigadier {
 
         template <typename Op>
         void ForEachParameter(Op&& fn) const noexcept {
-            Details::Iterate(_parameters, [fn](auto parameter) {
-                fn(parameter.name(), parameter.description(), decltype(parameter)::Required);
-                return false;
-            });
+            Details::Iterate(_parameters, std::forward<Op&&>(fn));
         }
 
     private:
@@ -804,22 +815,16 @@ namespace Brigadier {
             });
         }
 
-#if defined(BRIGADIER_CONCEPTS_ENABLED)
         template <typename T, typename U>
         constexpr static auto PrintHelp(std::string_view input, T const& root, U& printer) noexcept
-#else
-        template <typename T>
-        constexpr static auto PrintHelp(std::string_view input, T const& root, HelpPrinter& printer) noexcept
-#endif
         {
-#if defined(BRIGADIER_CONCEPTS_ENABLED)
             static_assert(Details::HasNotifyBegin<U>, "'printer' needs `void NotifyBegin()`.");
             static_assert(Details::HasNotifyEnd<U>, "'printer' needs `void NotifyEnd()`.");
             static_assert(Details::HasNotifyLiteral<U>, "'printer' needs `void NotifyLiteral(std::string_view)`.");
             static_assert(Details::HasNotifyParameter<U>, "'printer' needs `void NotifyParameter(std::string_view, bool)`.");
             static_assert(Details::HasNotifyCommandDescription<U>, "'printer' needs `void NotifyCommandDescription(std::string_view)`.");
-            static_assert(Details::HasNotifyParameterDescription<U>, "'printer' needs `void NotifyParameterDescription(std::string_view, std::optional<std::string_view>, bool)`.");
-#endif
+            static_assert(Details::HasNotifyParameterDescription<U> != Details::HasNotifyTemplateParameterDescription<U>,
+                "'printer' needs `void NotifyParameterDescription<T>(std::string_view, std::optional<std::string_view>, bool)` or a non-generic version of that method. Can't have both!");
 
             TreePath<T, void> rootPath { root };
 
@@ -845,16 +850,22 @@ namespace Brigadier {
                 if constexpr (Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
                     printer.NotifyParameter("parameters...", true);
                 } else { // if constexpr (Details::IsDetailedCommandNode<Node>::value)
-                    currentNode.ForEachParameter([&printer](std::string_view name, auto&& description, bool required) noexcept -> void {
-                        printer.NotifyParameter(name, required);
+                    currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
+                        printer.NotifyParameter(parameter.name(), parameter.required());
                     });
 
                     if (detailed) {
                         printer.NotifyCommandDescription(currentNode.description());
 
-                        currentNode.ForEachParameter([&printer](auto name, auto&& description, auto required) {
-                            printer.NotifyParameterDescription(name, description, required);
+                        currentNode.ForEachParameter([&printer](auto parameter) {
+                                
+                            if constexpr (Details::HasNotifyParameterDescription<Printer>) {
+                                printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
+                            } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
+                                printer.NotifyParameterDescription<decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                            }
                         });
+                        
                     }
                 }
 
