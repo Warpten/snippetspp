@@ -69,7 +69,7 @@ This creates an object representing an execution point of the command tree.
   You can also inject `Source const&` or `Source &` at any point in the parameters. Usually, for simplicity, keep it in front.
 - `parameterInfo`  
   One or more of `Brigadier::ParameterMeta<T>`. Must match the order and types of parameters of `fn` that are extracted from the command.  
-  ⚠️ Types are there to ensure you don't screw up when modifying the function handler or vice-versa.
+  ⚠️ Types are there to ensure any change to the callback is mirrored on the parameter metadata, and vice-versa.
 
 ### `_ParameterExtractor<S, T, Enable = void>`
 
@@ -103,6 +103,23 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 The help print test is mostly a no-op but shows the cost of traversing a simple tree.
 
 ```cpp
+
+struct HelpPrinter
+{
+    void NotifyBeginCommand() { } // ⚠️ Required
+    void NotifyEndCommand() { } // ⚠️ Required
+
+    void NotifyLiteral(std::string_view literal) {  } // ⚠️ Required
+    void NotifyParameter(std::string_view name, bool required) { } // ⚠️ Required
+    void NotifyCommandDescription(std::string_view description) { } // ⚠️ Required
+    
+    
+    template <typename T>
+    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
+    // -- or -- 
+    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
+    // The former will pass parameter type through T.
+};
 
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
     .Then(
