@@ -219,8 +219,7 @@ namespace Brigadier {
             static std::false_type test(...);
 
             template <typename T>
-            struct ParameterIsInput<T, std::enable_if_t<decltype(test<T>(0))::value>>
-            {
+            struct ParameterIsInput<T, std::enable_if_t<decltype(test<T>(0))::value>> {
                 enum { value = true };
             };
             template <typename T>
@@ -271,7 +270,7 @@ namespace Brigadier {
 
         using namespace std::string_view_literals;
         
-#if !defined(BRIGADIER_CONCEPTS_ENABLED)
+#if defined(BRIGADIER_CONCEPTS_ENABLED)
         template <typename T>
         concept HasNotifyBegin = requires (T& t) {
             { t.NotifyBeginCommand() } -> std::same_as<void>;
@@ -305,13 +304,13 @@ namespace Brigadier {
             template <typename> struct SFINAE : std::true_type { };
 #define MAKE_PSEUDO_CONCEPT(CONCEPT, FNCALL)                                                             \
             template <typename T>                                                                        \
-            static auto test_ ## CONCEPT ## (int) -> SFINAE<decltype(std::declval<T>(). ## FNCALL ## )>; \
+            static auto test_##CONCEPT##(int) -> SFINAE<decltype(std::declval<T>().##FNCALL##)>;         \
                                                                                                          \
             template <typename>                                                                          \
-            static auto test_ ## CONCEPT ## (long) -> std::false_type;                                   \
+            static auto test_##CONCEPT##(long) -> std::false_type;                                       \
                                                                                                          \
             template <typename T>                                                                        \
-            constexpr static const bool CONCEPT = decltype(test_ ## CONCEPT ## <T>(0))::value;
+            constexpr static const bool CONCEPT = decltype(test_##CONCEPT##<T>(0))::value;
 
             MAKE_PSEUDO_CONCEPT(HasNotifyBegin, NotifyBeginCommand());
             MAKE_PSEUDO_CONCEPT(HasNotifyEnd, NotifyEndCommand());
@@ -393,22 +392,7 @@ namespace Brigadier {
             other._sz = 0;
         }
 
-        String(String const& other) noexcept
-        {
-            if (other._owning)
-            {
-                _val = new char[other._sz];
-                _sz = other._sz;
-                std::memcpy(_val, other._val, other._sz);
-                _owning = true;
-            }
-            else
-            {
-                _val = other._val;
-                _sz = other._sz;
-                _owning = false;
-            }
-        }
+        String(String const& other) noexcept = delete;
 
         ~String() noexcept {
             if (_owning)
@@ -439,8 +423,6 @@ namespace Brigadier {
 
     template <typename T>
     struct _ParameterExtractor<T, std::enable_if_t<std::is_integral_v<T>>> {
-        constexpr static const T Default { };
-
         static auto _Extract(std::string_view& reader) noexcept
             -> std::optional<T>
         {
@@ -463,8 +445,6 @@ namespace Brigadier {
 
     template <typename T>
     struct _ParameterExtractor<T, std::enable_if_t<std::is_floating_point_v<T>>> {
-        constexpr static const T Default { };
-
         static auto _Extract(std::string_view& reader) noexcept
             -> std::optional<T>
         {
@@ -492,13 +472,18 @@ namespace Brigadier {
             -> std::optional<Word>
         {
             auto pos = reader.find(' ', 0);
-            if (pos == std::string_view::npos)
-                return Word { reader };
+            if (pos == std::string_view::npos) {
+                auto source = reader;
+                reader = reader.substr(reader.length());
+                return Word { source };
+            }
 
             if (pos == 0)
                 return std::nullopt;
 
-            return Word { reader.substr(0, pos) };
+            auto data = reader.substr(0, pos);
+            reader = reader.substr(pos);
+            return Word { data };
         }
     };
 
@@ -507,7 +492,10 @@ namespace Brigadier {
         static auto _Extract(std::string_view& reader) noexcept
             -> std::optional<GreedyString>
         {
-            return GreedyString { reader };
+            std::string_view source = reader;
+            reader = reader.substr(reader.length());
+
+            return GreedyString { source };
         }
     };
 
@@ -550,7 +538,7 @@ namespace Brigadier {
             if (escapes)
             {
                 std::string owningCopy { data };
-                boost::erase_all(owningCopy, "\\");
+                owningCopy.erase(std::remove(owningCopy.begin(), owningCopy.end(), '\\'), owningCopy.end());
 
                 return QuotedString { std::move(owningCopy) };
             }
@@ -685,7 +673,7 @@ namespace Brigadier {
 
         constexpr const std::string_view name() const { return _name; }
         constexpr std::optional<const std::string_view> const& description() const noexcept { return _description; }
-        constexpr bool required() const { return Required; }
+        constexpr static bool required() { return Required; }
 
     private:
         const std::string_view _name;
@@ -709,11 +697,11 @@ namespace Brigadier {
                 "Parameter informations do not match the command.");
         }
         
-        constexpr std::string_view literal() const { return CommandNode<Fn>::literal(); }
-        constexpr std::string_view description() const { return _description; }
+        constexpr std::string_view literal() const noexcept { return CommandNode<Fn>::literal(); }
+        constexpr std::string_view description() const noexcept { return _description; }
 
         template <typename Op>
-        void ForEachParameter(Op&& fn) const noexcept {
+        constexpr void ForEachParameter(Op&& fn) const noexcept {
             Details::Iterate(_parameters, std::forward<Op&&>(fn));
         }
 
@@ -729,12 +717,12 @@ namespace Brigadier {
             constexpr TreePathBase(T const& node) noexcept : _value(node) { }
 
             template <typename Operation>
-            void Traverse(Operation&& operation) const {
+            constexpr void Traverse(Operation&& operation) const noexcept {
                 operation(_value);
             }
 
-            constexpr T const& node() const { return _value; }
-            constexpr std::tuple<> children() const { return std::tuple { }; }
+            constexpr T const& node() const noexcept { return _value; }
+            constexpr std::tuple<> children() const noexcept { return std::tuple { }; }
 
             constexpr static const std::size_t childCount = 0;
         private:
@@ -746,12 +734,12 @@ namespace Brigadier {
             constexpr TreePathBase(Tree<T, Ts...> const& node) noexcept : _value(node) { }
 
             template <typename Operation>
-            void Traverse(Operation&& operation) const {
+            constexpr void Traverse(Operation&& operation) const noexcept {
                 operation(_value._value);
             }
 
-            constexpr T const& node() const { return _value._value; }
-            constexpr std::tuple<Ts...> const& children() const { return _value._children; }
+            constexpr T const& node() const noexcept { return _value._value; }
+            constexpr std::tuple<Ts...> const& children() const noexcept { return _value._children; }
 
             constexpr static const std::size_t childCount = sizeof...(Ts);
 
@@ -768,17 +756,17 @@ namespace Brigadier {
             constexpr TreePath(T const& node, P const& parent) noexcept : Base(node), _parent(parent) { }
 
             template <typename V>
-            TreePath<V, TreePath<T, P>> ChainWith(V const& node) const {
+            constexpr TreePath<V, TreePath<T, P>> ChainWith(V const& node) const noexcept {
                 return TreePath<V, TreePath<T, P>> { node, *this };
             }
 
             template <typename Operation>
-            void Traverse(Operation&& operation) const {
+            constexpr void Traverse(Operation&& operation) const noexcept {
                 _parent.Traverse(std::forward<Operation&&>(operation));
                 Base::Traverse(std::forward<Operation&&>(operation));
             }
 
-            constexpr auto children() const { return Base::children(); }
+            constexpr auto children() const noexcept { return Base::children(); }
 
         private:
             P const& _parent;
@@ -791,17 +779,17 @@ namespace Brigadier {
             constexpr explicit TreePath(T const& node) noexcept : Base(node) { }
 
             template <typename V>
-            TreePath<V, TreePath<T, void>> ChainWith(V const& node) const {
+            constexpr TreePath<V, TreePath<T, void>> ChainWith(V const& node) const noexcept {
                 return TreePath<V, TreePath<T, void>> { node, *this };
             }
             
             template <typename Operation>
-            void Traverse(Operation&& operation) const {
+            constexpr void Traverse(Operation&& operation) const noexcept {
                 Base::Traverse(std::forward<Operation&&>(operation));
             }
 
-            constexpr auto node() const { return Base::node(); }
-            constexpr auto children() const { return Base::children(); }
+            constexpr auto node() const noexcept { return Base::node(); }
+            constexpr auto children() const noexcept { return Base::children(); }
         };
 
         template <typename T>
@@ -835,13 +823,13 @@ namespace Brigadier {
 
     private:
         template <typename Printer, typename Path>
-        constexpr static void _PrintCallback(Printer&& printer, Path&& path, bool detailed) {
+        constexpr static void _PrintCallback(Printer&& printer, Path&& path, bool detailed) noexcept {
             auto currentNode { path.node() };
 
             if constexpr (Details::IsDetailedCommandNode<decltype(currentNode)>::value || Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
                 printer.NotifyBeginCommand();
 
-                path.Traverse([&printer](auto pathNode) {
+                path.Traverse([&printer](auto pathNode) noexcept -> void {
                     static_assert(Details::IsNode<decltype(pathNode)>::value, "Traverse ill-formed");
 
                     printer.NotifyLiteral(pathNode.literal());
@@ -849,7 +837,7 @@ namespace Brigadier {
 
                 if constexpr (Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
                     printer.NotifyParameter("parameters...", true);
-                } else { // if constexpr (Details::IsDetailedCommandNode<Node>::value)
+                } else { // if constexpr (Details::IsDetailedCommandNode<decltype(currentNode)>::value)
                     currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
                         printer.NotifyParameter(parameter.name(), parameter.required());
                     });
@@ -857,8 +845,7 @@ namespace Brigadier {
                     if (detailed) {
                         printer.NotifyCommandDescription(currentNode.description());
 
-                        currentNode.ForEachParameter([&printer](auto parameter) {
-                                
+                        currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
                             if constexpr (Details::HasNotifyParameterDescription<Printer>) {
                                 printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
                             } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
@@ -871,7 +858,7 @@ namespace Brigadier {
 
                 printer.NotifyEndCommand();
             } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && std::decay_t<decltype(path)>::childCount > 0) {
-                Details::Iterate(path.children(), [&printer](auto childNode) -> void {
+                Details::Iterate(path.children(), [&printer](auto childNode) noexcept -> void {
                     _PrintCallback(std::forward<Printer&&>(printer), childNode, false);
                 });
             }
@@ -890,7 +877,7 @@ namespace Brigadier {
                 {
                     case ValidationResult::Children:
                     {
-                        return Details::Iterate(path.children(), [&path, &operation, subReader = reader.substr(1)](auto childNode) {
+                        return Details::Iterate(path.children(), [&path, &operation, subReader = reader.substr(1)](auto childNode) noexcept {
                             return _ProcessImpl(subReader, path.ChainWith(childNode), std::forward<Operation&&>(operation));
                         }, [](auto result) {
                             return result == true;
