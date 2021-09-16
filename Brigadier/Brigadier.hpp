@@ -849,7 +849,7 @@ namespace Brigadier {
                             if constexpr (Details::HasNotifyParameterDescription<Printer>) {
                                 printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
                             } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
-                                printer.template NotifyParameterDescription<decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                                printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
                             }
                         });
                         
