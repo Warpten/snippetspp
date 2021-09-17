@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
+static_assert(__cplusplus >= 201703L, "Brigadier only sNotifyParameterDescriptionupports C++17 and upwards.");
 
 #if __cplusplus >= 202002L
 # define BRIGADIER_CPP20
@@ -849,7 +849,7 @@ namespace Brigadier {
                             if constexpr (Details::HasNotifyParameterDescription<Printer>) {
                                 printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
                             } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
-                                printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                                printer.NotifyParameterDescription<decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
                             }
                         });
                         
@@ -877,6 +877,13 @@ namespace Brigadier {
                 {
                     case ValidationResult::Children:
                     {
+                        if (reader.length() == 0) {
+                            if constexpr (!std::is_void_v<return_type>)
+                                return return_type { };
+                            else
+                                return;
+                        }
+
                         return Details::Iterate(path.children(), [&path, &operation, subReader = reader.substr(1)](auto childNode) noexcept {
                             return _ProcessImpl(subReader, path.ChainWith(childNode), std::forward<Operation&&>(operation));
                         }, [](auto result) {
