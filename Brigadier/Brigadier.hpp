@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-static_assert(__cplusplus >= 201703L, "Brigadier only sNotifyParameterDescriptionupports C++17 and upwards.");
+static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
 
 #if __cplusplus >= 202002L
 # define BRIGADIER_CPP20
@@ -855,7 +855,7 @@ namespace Brigadier {
                             if constexpr (Details::HasNotifyParameterDescription<Printer>) {
                                 printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
                             } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
-                                printer.NotifyParameterDescription<decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                                printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
                             }
                         });
                         
