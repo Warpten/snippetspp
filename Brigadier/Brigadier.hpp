@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
+static_assert(__cplusplus >= 201703L, "Brigadier only sNotifyParameterDescriptionupports C++17 and upwards.");
 
 #if __cplusplus >= 202002L
 # define BRIGADIER_CPP20
@@ -584,15 +584,21 @@ namespace Brigadier {
         constexpr CommandNode(CommandNode<Fn> const&) = default;
         constexpr CommandNode(CommandNode<Fn>&&) noexcept = default;
 
+        constexpr ValidationResult Validate(std::string_view& reader) const noexcept
+        {
+            if (reader.find(_literal) != 0)
+                return ValidationResult::Failure;
+
+            reader = reader.substr(_literal.length());;
+            return ValidationResult::Execute;
+        }
+
         //> Returns true if execution succeeded, false otherwise.
         template <typename S>
         constexpr auto TryExecute(std::string_view const& reader, S& source) const noexcept
             -> bool
         {
-            if (reader.find(_literal) != 0)
-                return false;
-
-            auto mutableReader = reader.substr(_literal.length());
+            auto mutableReader = reader;
 
             using args_t = boost::callable_traits::args_t<Fn>;
 
@@ -800,7 +806,7 @@ namespace Brigadier {
 
             return _ProcessImpl(input, std::move(rootPath), [&source](auto treePath, std::string_view reader) noexcept -> bool {
                 return treePath.node().TryExecute(reader, source);
-            });
+            }, []() { return false; });
         }
 
         template <typename T, typename U>
@@ -818,7 +824,7 @@ namespace Brigadier {
 
             return _ProcessImpl(input, std::move(rootPath), [&printer](auto treePath, std::string_view) noexcept -> void {
                 _PrintCallback(printer, treePath, true);
-            });
+            }, []() { });
         }
 
     private:
@@ -849,7 +855,7 @@ namespace Brigadier {
                             if constexpr (Details::HasNotifyParameterDescription<Printer>) {
                                 printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
                             } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
-                                printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                                printer.NotifyParameterDescription<decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
                             }
                         });
                         
@@ -864,11 +870,13 @@ namespace Brigadier {
             }
         }
         
-        template <typename Operation, typename N, typename P>
-        constexpr static auto _ProcessImpl(std::string_view reader, TreePath<N, P>&& path, Operation&& operation) noexcept
+        template <typename Operation, typename Default, typename N, typename P>
+        constexpr static auto _ProcessImpl(std::string_view reader, TreePath<N, P>&& path, Operation&& operation, Default&& defaultOperation) noexcept
             -> decltype(operation(path, reader))
         {
             using return_type = decltype(operation(path, reader));
+
+            static_assert(std::is_same_v<return_type, decltype(defaultOperation())>);
 
             if constexpr (std::is_same_v<std::decay_t<decltype(path.node())>, BareNode>)
             {
@@ -877,15 +885,11 @@ namespace Brigadier {
                 {
                     case ValidationResult::Children:
                     {
-                        if (reader.length() == 0) {
-                            if constexpr (!std::is_void_v<return_type>)
-                                return return_type { };
-                            else
-                                return;
-                        }
+                        if (reader.length() == 0)
+                            return defaultOperation();
 
-                        return Details::Iterate(path.children(), [&path, &operation, subReader = reader.substr(1)](auto childNode) noexcept {
-                            return _ProcessImpl(subReader, path.ChainWith(childNode), std::forward<Operation&&>(operation));
+                        return Details::Iterate(path.children(), [&path, &operation, &defaultOperation, subReader = reader.substr(1)](auto childNode) noexcept {
+                            return _ProcessImpl(subReader, path.ChainWith(childNode), std::forward<Operation&&>(operation), std::forward<Default&&>(defaultOperation));
                         }, [](auto result) {
                             return result == true;
                         });
@@ -897,10 +901,19 @@ namespace Brigadier {
                         break;
                 }
 
-                if constexpr (!std::is_void_v<return_type>)
-                    return return_type { };
+                return defaultOperation();
             } else {
-                return operation(path, reader);
+                ValidationResult validationResult { path.node().Validate(reader) };
+                switch (validationResult)
+                {
+                    case ValidationResult::Children:
+                        assert(false && "Unreachable");
+                        break;
+                    case ValidationResult::Execute:
+                        return operation(path, reader);
+                    case ValidationResult::Failure:
+                        return defaultOperation();
+                }
             }
         }
     };
