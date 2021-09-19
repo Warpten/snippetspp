@@ -888,7 +888,7 @@ namespace Brigadier {
         enum TreeTraversalFlags : uint8_t {
             None                            = 0x00,
             //> If Validate(...) returns Failure, call the callback anyways if reader is also empty.
-            DoNotFailValidationOnEmptyInput = 0x0,
+            DoNotFailValidationOnEmptyInput = 0x01,
         };
 
         template <typename Printer, typename Path>
@@ -945,13 +945,6 @@ namespace Brigadier {
                         }, [](auto pathResult) {
                             return pathResult == true;
                         });
-
-                        /*if constexpr ((Flags & TreeTraversalFlags::ParentOnFailure) != 0) {
-                            if (!childResult) {
-                                operation(path, false, reader);
-                                return true;
-                            }
-                        }*/
 
                         return childResult;
                     } else {
