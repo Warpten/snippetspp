@@ -37,6 +37,14 @@ static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards
 static_assert(false, "Brigadier requires std::format or fmt::format");
 #endif
 
+#if defined(_WIN32)
+# define BRIGADIER_UNREACHABLE __assume(0)
+#elif defined(__clang__) || defined(__gcc__)
+# define BRIGADIER_UNREACHABLE __builtin_unreachable()
+#else
+# define BRIGADIER_UNREACHABLE
+#endif
+
 #include <array>
 #include <cassert>
 #include <charconv>
@@ -151,6 +159,23 @@ namespace Brigadier {
         template <typename Tuple>
         struct TupleIterator { };
 
+        template <typename T>
+        struct TupleIterator<std::tuple<T>> {
+            template <typename Fn>
+            constexpr static auto Iterate(std::tuple<T> const& tpl, Fn&& fn) noexcept {
+                return fn(std::get<0u>(tpl));
+            }
+
+
+            template <typename Fn, typename Condition>
+            constexpr static auto Iterate(std::tuple<T> const& tpl, Fn&& fn, Condition&& condition) noexcept {
+                return fn(std::get<0u>(tpl));
+            }
+        };
+
+        template <>
+        struct TupleIterator<std::tuple<>>;
+
         template <typename... Ts>
         struct TupleIterator<std::tuple<Ts...>> {
             template <typename Fn>
@@ -194,10 +219,20 @@ namespace Brigadier {
         };
 
         template <typename...Ts, typename... Functions>
-        constexpr auto Iterate(std::tuple<Ts...> const& tuple, Functions&&... functions){
+        constexpr auto Iterate(std::tuple<Ts...> const& tuple, Functions&&... functions) {
             return TupleIterator<std::tuple<Ts...>>::template Iterate(tuple, std::forward<Functions&&>(functions)...);
         }
+
+        template <typename Tuple, typename Predicate, size_t... Is>
+        constexpr static bool _Any(Tuple&& tuple, Predicate&& predicate, std::index_sequence<Is...>) noexcept {
+            return (predicate(std::get<Is>(tuple)) || ...);
+        }
         
+        template <typename... Ts, typename Predicate>
+        constexpr static bool Any(std::tuple<Ts...> const& tpl, Predicate&& predicate) noexcept {
+            return _Any(tpl, std::forward<Predicate&&>(predicate), std::make_index_sequence<sizeof...(Ts)>());
+        }
+
         // ---- std::is_reference_wrapper ----
         namespace {
             template <typename T> struct is_reference_wrapper : std::false_type { };
@@ -730,9 +765,19 @@ namespace Brigadier {
             constexpr T const& node() const noexcept { return _value; }
             constexpr std::tuple<> children() const noexcept { return std::tuple { }; }
 
-            constexpr static const std::size_t childCount = 0;
+            constexpr static const std::size_t children_count = 0;
+            constexpr static const bool has_node = true;
         private:
             T const& _value;
+        };
+
+        template <>
+        struct TreePathBase<void> {
+            template <typename Operation>
+            constexpr void Traverse(Operation&&) const noexcept { }
+            
+            constexpr static const std::size_t children_count = 0;
+            constexpr static const bool has_node = false;
         };
 
         template <typename T, typename... Ts>
@@ -747,7 +792,8 @@ namespace Brigadier {
             constexpr T const& node() const noexcept { return _value._value; }
             constexpr std::tuple<Ts...> const& children() const noexcept { return _value._children; }
 
-            constexpr static const std::size_t childCount = sizeof...(Ts);
+            constexpr static const std::size_t children_count = sizeof...(Ts);
+            constexpr static const bool has_node = true;
 
         private:
             Tree<T, Ts...> const& _value;
@@ -773,7 +819,9 @@ namespace Brigadier {
             }
 
             constexpr auto children() const noexcept { return Base::children(); }
-
+            constexpr P const& parent() const noexcept { return _parent; }
+            
+            constexpr static const bool has_parent = true;
         private:
             P const& _parent;
         };
@@ -796,6 +844,8 @@ namespace Brigadier {
 
             constexpr auto node() const noexcept { return Base::node(); }
             constexpr auto children() const noexcept { return Base::children(); }
+
+            constexpr static const bool has_parent = false;
         };
 
         template <typename T>
@@ -804,9 +854,16 @@ namespace Brigadier {
         {
             TreePath<T, void> rootPath { root };
 
-            return _ProcessImpl(input, std::move(rootPath), [&source](auto treePath, std::string_view reader) noexcept -> bool {
-                return treePath.node().TryExecute(reader, source);
-            }, []() { return false; });
+            return _WalkPath<TreeTraversalFlags::None>(std::move(rootPath), input, [&source](auto treePath, bool successful, std::string_view reader) noexcept -> bool {
+                if constexpr (!Details::IsBareNode<std::decay_t<decltype(treePath.node())>>::value) {
+                    if (successful)
+                        return treePath.node().TryExecute(reader, source);
+
+                    return false;
+                } else {
+                    return false;
+                }
+            });
         }
 
         template <typename T, typename U>
@@ -822,12 +879,18 @@ namespace Brigadier {
 
             TreePath<T, void> rootPath { root };
 
-            return _ProcessImpl(input, std::move(rootPath), [&printer](auto treePath, std::string_view) noexcept -> void {
-                _PrintCallback(printer, treePath, true);
-            }, []() { });
+            return _WalkPath<TreeTraversalFlags::DoNotFailValidationOnEmptyInput>(std::move(rootPath), input, [&printer](auto resolvedPath, bool successful, std::string_view reader) {
+               _PrintCallback(printer, resolvedPath, successful); 
+            });
         }
 
     private:
+        enum TreeTraversalFlags : uint8_t {
+            None                            = 0x00,
+            //> If Validate(...) returns Failure, call the callback anyways if reader is also empty.
+            DoNotFailValidationOnEmptyInput = 0x0,
+        };
+
         template <typename Printer, typename Path>
         constexpr static void _PrintCallback(Printer&& printer, Path&& path, bool detailed) noexcept {
             auto currentNode { path.node() };
@@ -863,57 +926,49 @@ namespace Brigadier {
                 }
 
                 printer.NotifyEndCommand();
-            } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && std::decay_t<decltype(path)>::childCount > 0) {
-                Details::Iterate(path.children(), [&printer](auto childNode) noexcept -> void {
-                    _PrintCallback(std::forward<Printer&&>(printer), childNode, false);
+            } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && std::decay_t<decltype(path)>::children_count > 0) {
+                Details::Iterate(path.children(), [&printer, &path](auto childNode) noexcept -> void {
+                    _PrintCallback(std::forward<Printer&&>(printer), path.ChainWith(childNode), false);
                 });
             }
         }
-        
-        template <typename Operation, typename Default, typename N, typename P>
-        constexpr static auto _ProcessImpl(std::string_view reader, TreePath<N, P>&& path, Operation&& operation, Default&& defaultOperation) noexcept
-            -> decltype(operation(path, reader))
+
+        template <TreeTraversalFlags Flags, typename Path, typename Operation>
+        constexpr static bool _WalkPath(Path&& path, std::string_view& reader, Operation&& operation, bool parentPathResult = true)
         {
-            using return_type = decltype(operation(path, reader));
-
-            static_assert(std::is_same_v<return_type, decltype(defaultOperation())>);
-
-            if constexpr (std::is_same_v<std::decay_t<decltype(path.node())>, BareNode>)
-            {
-                ValidationResult validationResult { path.node().Validate(reader) };
-                switch (validationResult)
-                {
-                    case ValidationResult::Children:
-                    {
-                        if (reader.length() == 0)
-                            return defaultOperation();
-
-                        return Details::Iterate(path.children(), [&path, &operation, &defaultOperation, subReader = reader.substr(1)](auto childNode) noexcept {
-                            return _ProcessImpl(subReader, path.ChainWith(childNode), std::forward<Operation&&>(operation), std::forward<Default&&>(defaultOperation));
-                        }, [](auto result) {
-                            return result == true;
+            ValidationResult validationResult { path.node().Validate(reader) };
+            switch (validationResult) {
+                case ValidationResult::Children: {
+                    if constexpr (std::decay_t<decltype(path)>::children_count > 0) {
+                        bool childResult = Details::Iterate(path.children(), [&path, reader = reader.empty() ? reader : reader.substr(1), &operation](auto childNode) mutable noexcept {
+                            return _WalkPath<Flags>(path.ChainWith(childNode), reader, operation, true);
+                        }, [](auto pathResult) {
+                            return pathResult == true;
                         });
-                    }
-                    case ValidationResult::Execute:
-                        assert(false && "Unreachable");
-                        break;
-                    default:
-                        break;
-                }
 
-                return defaultOperation();
-            } else {
-                ValidationResult validationResult { path.node().Validate(reader) };
-                switch (validationResult)
-                {
-                    case ValidationResult::Children:
-                        assert(false && "Unreachable");
-                        break;
-                    case ValidationResult::Execute:
-                        return operation(path, reader);
-                    case ValidationResult::Failure:
-                        return defaultOperation();
+                        /*if constexpr ((Flags & TreeTraversalFlags::ParentOnFailure) != 0) {
+                            if (!childResult) {
+                                operation(path, false, reader);
+                                return true;
+                            }
+                        }*/
+
+                        return childResult;
+                    } else {
+                        return false;
+                    }
                 }
+                case ValidationResult::Failure:
+                    if constexpr ((Flags & TreeTraversalFlags::DoNotFailValidationOnEmptyInput) != 0) {
+                        if (reader.empty())
+                            operation(path, true, reader);
+                    }
+                    return false;
+                case ValidationResult::Execute:
+                    operation(path, true, reader);
+                    return true;
+                default:
+                    BRIGADIER_UNREACHABLE;
             }
         }
     };
