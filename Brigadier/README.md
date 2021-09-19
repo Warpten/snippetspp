@@ -10,6 +10,8 @@ A simple command parser.
 
 ## Usage
 
+### Parse an input
+
 ```cpp
 constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
     .Then(
@@ -22,9 +24,9 @@ constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
         ),
         Brigadier::Node("bar")
             .Then(
-                // This is doable but not recommended: leads to a slew of issues, especially with getting command help.
                 Brigadier::Command("biz", [](uint32_t) noexcept { }),
-                Brigadier::Command("biz", [](S&, Brigadier::QuotedString) noexcept { })
+                Brigadier::Command("baz", [](uint32_t) noexcept { }),
+                Brigadier::Command("buz", [](uint32_t) noexcept { }),
             )
     );
 
@@ -36,11 +38,52 @@ int main() {
 }
 ```
 
-The above code registers 2 commands:
+The above code registers 4 commands:
 
 ```
 > foo foo $x
 > foo bar biz $x
+> foo bar baz $x
+> foo bar buz $x
+```
+
+### Print command help
+
+`Brigadier::TreeParser<S>::PrintHelp` expects a generic `Printer` type, which is expected to have the following contract:
+
+```cpp
+struct
+{
+    void NotifyBeginCommand() { } // ⚠️ Required
+    void NotifyEndCommand() { } // ⚠️ Required
+
+    void NotifyLiteral(std::string_view literal) {  } // ⚠️ Required
+    void NotifyParameter(std::string_view name, bool required) { } // ⚠️ Required
+    void NotifyCommandDescription(std::string_view description) { } // ⚠️ Required
+    
+    
+    template <typename T>
+    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
+    // -- or -- 
+    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
+    // The former will pass parameter type through T.
+};
+```
+
+Pass an instance of a type matching this interface to the `PrintHelp` method. A basic output to console could look like this when executed against the command tree shown above:
+```
+> PrintHelp("foo foo", tree, printer);
+
+foo foo [nodeIndex] <path> 
+  This command does X thing
+  - nodeIndex (Required) unsigned int
+  - path (Optional) std::optional<Brigadier::QuotedString>
+
+> PrintHelp("foo bar", tree, printer);
+
+foo bar biz [parameters...] 
+foo bar boz [parameters...] 
+foo bar buz [parameters...] 
 ```
 
 ## Features
@@ -95,10 +138,10 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              329.85 |        3,031,640.63 |    1.8% |      3.96 | `Parse(foo foo 42 "bar\"itone", tree, source)`
-|               82.71 |       12,091,050.45 |    1.4% |      0.99 | `Parse(foo bar biz 42, tree, source)`
-|               89.31 |       11,196,771.42 |    2.0% |      1.07 | `Parse(foo bar biz "foo", tree, source)`
-|               28.30 |       35,339,109.54 |    1.0% |      0.33 | `PrintHelp("foo foo", tree, printer)`
+|              208.23 |        4,802,385.84 |    1.3% |      2.53 | `Parse(foo foo 42 "bar\"itone", tree, source)`
+|               92.37 |       10,826,472.47 |    0.6% |      1.11 | `Parse(foo bar biz 42, tree, source)`
+|               97.85 |       10,219,706.00 |    0.6% |      1.17 | `Parse(foo bar biz "foo", tree, source)`
+|               46.67 |       21,428,415.21 |    1.3% |      0.56 | `PrintHelp("foo foo", tree, printer)`
 
 The help print test is mostly a no-op but shows the cost of traversing a simple tree.
 
