@@ -15,6 +15,9 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef BRIGADIER_HEADER_GUARD_HPP__
+#define BRIGADIER_HEADER_GUARD_HPP__
+
 static_assert(__cplusplus >= 201703L, "Brigadier only supports C++17 and upwards.");
 
 #if __cplusplus >= 202002L
@@ -291,11 +294,17 @@ namespace Brigadier {
             template <typename Fn, typename... Ts>
             struct ValidateParameterInfo
             {
+                template <typename ... Us>
+                static constexpr auto decay_types(std::tuple<Us...> const &) -> std::tuple<std::decay_t<Us>...>;
+
+                template <typename T>
+                using decay_tuple = decltype(decay_types(std::declval<T>()));
+
                 using source_tuple = typename FilterHandlerParams<
                     ParameterIsInput,
-                    boost::callable_traits::args_t<Fn>
+                    decay_tuple<boost::callable_traits::args_t<Fn>>
                 >::type;
-                using target_tuple = std::tuple<Ts...>;
+                using target_tuple = std::tuple<std::decay_t<Ts>...>;
 
                 enum {
                     value = std::is_same_v<source_tuple, target_tuple>
@@ -630,7 +639,7 @@ namespace Brigadier {
 
         //> Returns true if execution succeeded, false otherwise.
         template <typename S>
-        constexpr auto TryExecute(std::string_view const& reader, S& source) const noexcept
+        constexpr auto TryExecute(std::string_view const& reader, const S& source) const noexcept
             -> bool
         {
             auto mutableReader = reader;
@@ -653,12 +662,12 @@ namespace Brigadier {
         Fn _fn;
 
         template <typename S, typename... Ts>
-        constexpr auto _ExtractParameters(S& source, bool& success, std::string_view& reader, std::tuple<Ts...>* tpl = nullptr) const {
+        constexpr auto _ExtractParameters(const S& source, bool& success, std::string_view& reader, std::tuple<Ts...>* tpl = nullptr) const {
             return std::tuple {  _ExtractParameter<S, Ts>(source, reader, success)... };
         }
 
         template <typename S, typename T>
-        constexpr auto _ExtractParameter(S& source, std::string_view& reader, bool& success) const noexcept {
+        constexpr auto _ExtractParameter(const S& source, std::string_view& reader, bool& success) const noexcept {
             using decayed_type = std::decay_t<T>;
 
             if constexpr (std::is_same_v<T, S&>) {
@@ -686,6 +695,7 @@ namespace Brigadier {
 
                 return std::optional<underlying_type> { };
             } else {
+                success = reader.length() > 1;
                 // If we already failed, fail fast
                 if (!success)
                     return decayed_type { };
@@ -695,7 +705,7 @@ namespace Brigadier {
                 reader = reader.substr(1);
                 auto result { _ParameterExtractor<decayed_type>::_Extract(reader) };
                 if (result.has_value())
-                    return result.value();
+                    return std::move(result.value());
 
                 success = false;
                 return decayed_type { };
@@ -844,24 +854,23 @@ namespace Brigadier {
 
             constexpr auto node() const noexcept { return Base::node(); }
             constexpr auto children() const noexcept { return Base::children(); }
+            // TODO: Will this work
+            constexpr TreePath<T, void> const& parent() const noexcept { return *this; }
 
             constexpr static const bool has_parent = false;
         };
 
         template <typename T>
-        constexpr static auto Parse(std::string_view input, T const& root, S& source) noexcept
+        constexpr static auto Parse(std::string_view input, T const& root, const S& source) noexcept
             -> bool
         {
             TreePath<T, void> rootPath { root };
 
-            return _WalkPath<TreeTraversalFlags::None>(std::move(rootPath), input, [&source](auto treePath, bool successful, std::string_view reader) noexcept -> bool {
+            return _WalkPath<TreeTraversalFlags::None>(std::move(rootPath), input, [&source](auto treePath, bool& executionResult, std::string_view reader) noexcept {
                 if constexpr (!Details::IsBareNode<std::decay_t<decltype(treePath.node())>>::value) {
-                    if (successful)
-                        return treePath.node().TryExecute(reader, source);
-
-                    return false;
+                    executionResult = treePath.node().TryExecute(reader, source);
                 } else {
-                    return false;
+                    executionResult = false;
                 }
             });
         }
@@ -879,8 +888,8 @@ namespace Brigadier {
 
             TreePath<T, void> rootPath { root };
 
-            return _WalkPath<TreeTraversalFlags::DoNotFailValidationOnEmptyInput>(std::move(rootPath), input, [&printer](auto resolvedPath, bool successful, std::string_view reader) {
-               _PrintCallback(printer, resolvedPath, successful); 
+            return _WalkPath<TreeTraversalFlags::DoNotFailValidationOnEmptyInput>(std::move(rootPath), input, [&printer](auto resolvedPath, bool& executionResult, std::string_view reader) {
+               executionResult = _PrintCallback(printer, resolvedPath); 
             });
         }
 
@@ -892,7 +901,7 @@ namespace Brigadier {
         };
 
         template <typename Printer, typename Path>
-        constexpr static void _PrintCallback(Printer&& printer, Path&& path, bool detailed) noexcept {
+        constexpr static bool _PrintCallback(Printer&& printer, Path&& path) noexcept {
             auto currentNode { path.node() };
 
             if constexpr (Details::IsDetailedCommandNode<decltype(currentNode)>::value || Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
@@ -911,26 +920,28 @@ namespace Brigadier {
                         printer.NotifyParameter(parameter.name(), parameter.required());
                     });
 
-                    if (detailed) {
-                        printer.NotifyCommandDescription(currentNode.description());
+                    printer.NotifyCommandDescription(currentNode.description());
 
-                        currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
-                            if constexpr (Details::HasNotifyParameterDescription<Printer>) {
-                                printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
-                            } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
-                                printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
-                            }
-                        });
-                        
-                    }
+                    currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
+                        if constexpr (Details::HasNotifyParameterDescription<Printer>) {
+                            printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
+                        } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
+                            printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                        }
+                    });
                 }
 
                 printer.NotifyEndCommand();
+                return true;
             } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && std::decay_t<decltype(path)>::children_count > 0) {
                 Details::Iterate(path.children(), [&printer, &path](auto childNode) noexcept -> void {
-                    _PrintCallback(std::forward<Printer&&>(printer), path.ChainWith(childNode), false);
+                    _PrintCallback(std::forward<Printer&&>(printer), path.ChainWith(childNode));
                 });
+                // TODO: probably (maybe?) a bug here?
+                return true;
             }
+
+            return false;
         }
 
         template <TreeTraversalFlags Flags, typename Path, typename Operation>
@@ -951,15 +962,19 @@ namespace Brigadier {
                         return false;
                     }
                 }
-                case ValidationResult::Failure:
+                case ValidationResult::Failure: {
+                    bool executionResult = false;
                     if constexpr ((Flags & TreeTraversalFlags::DoNotFailValidationOnEmptyInput) != 0) {
                         if (reader.empty())
-                            operation(path, true, reader);
+                            operation(path.parent(), executionResult, reader);
                     }
-                    return false;
-                case ValidationResult::Execute:
-                    operation(path, true, reader);
-                    return true;
+                    return executionResult;
+                }
+                case ValidationResult::Execute: {
+                    bool executionResult = true;
+                    operation(path, executionResult, reader);
+                    return executionResult;
+                }
                 default:
                     BRIGADIER_UNREACHABLE;
             }
@@ -994,3 +1009,5 @@ namespace Brigadier {
 #if defined(BRIGADIER_FORMAT_NAMESPACE)
 # undef BRIGADIER_FORMAT_NAMESPACE
 #endif
+
+#endif // BRIGADIER_HEADER_GUARD_HPP__
