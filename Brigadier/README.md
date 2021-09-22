@@ -85,6 +85,9 @@ foo bar biz [parameters...]
 foo bar boz [parameters...] 
 foo bar buz [parameters...] 
 ```
+Example of a more involved usage:
+
+![oYafEu9EDC](https://user-images.githubusercontent.com/563936/134428322-ff47065e-4a48-4999-9d0e-6ae3b75fee61.gif)
 
 ## Features
 
