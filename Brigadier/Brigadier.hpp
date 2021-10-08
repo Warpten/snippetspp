@@ -57,6 +57,8 @@ static_assert(false, "Brigadier requires std::format or fmt::format");
 #include <type_traits>
 #include <unordered_map>
 
+#include <iostream>
+
 #include <boost/algorithm/string.hpp>
 #include <boost/callable_traits/args.hpp>
 #include <boost/callable_traits/is_noexcept.hpp>
@@ -96,9 +98,9 @@ namespace Brigadier {
 
     namespace Details {
         // ---- IsBareNode ----
-        namespace {
+        inline namespace {
             template <typename T>
-            using IsBareNode = std::is_same<T, BareNode>;
+            using IsBareNode = std::is_same<std::decay_t<T>, BareNode>;
         }
 
         // ---- IsSimpleCommandNode ----
@@ -109,7 +111,7 @@ namespace Brigadier {
         }
 
         // ---- IsDetailedCommandNode ----
-        namespace {
+        inline namespace {
             //> Determines wether or not T is a specialization of DetailedCommandNode<Fn, ParameterMeta<Ts>...>.
             template <typename T> struct IsDetailedCommandNode : std::false_type { };
             template <typename Fn, typename... Ts> struct IsDetailedCommandNode<DetailedCommandNode<Fn, Ts...>> : std::true_type { };
@@ -118,14 +120,14 @@ namespace Brigadier {
         }
 
         // ---- IsNode ----
-        namespace {
+        inline namespace {
             template <typename T> struct IsNode {
                 enum { value = IsDetailedCommandNode<T>::value || IsSimpleCommandNode<T>::value || IsBareNode<T>::value };
             };
         }
 
         // ---- IsTree ----
-        namespace {
+        inline namespace {
             template <typename T> struct IsTree : std::false_type { };
             template <typename T, typename... Ts> struct IsTree<Tree<T, Ts...>> : std::true_type { };
             template <typename T> struct IsTree<T const&> : IsTree<T> { };
@@ -134,14 +136,14 @@ namespace Brigadier {
 
         // ---- TupleSize ----
         // Like std::tuple_size but handles empty tuples properly
-        namespace {
+        inline namespace {
             template <typename T> struct TupleSize;
             template <typename... Ts> struct TupleSize<std::tuple<Ts...>> { constexpr static const size_t value = sizeof...(Ts); };
             template <> struct TupleSize<std::tuple<>> { constexpr static const size_t value = 0; };
         }
         
         // ---- ValidateTree ----
-        namespace {
+        inline namespace {
             template <typename U, typename T>
             struct ValidateTree : std::true_type { };
 
@@ -152,92 +154,61 @@ namespace Brigadier {
         }
 
         // ---- is_optional
-        namespace {
+        inline namespace {
             template <typename T> struct is_optional : std::false_type { };
             template <typename T> struct is_optional<std::optional<T>> : std::true_type { };
             template <typename T>
             constexpr static const bool is_optional_v = is_optional<T>::value;
         }
 
-        template <typename Tuple>
-        struct TupleIterator { };
+        inline namespace { // Any(Tuple, Predicate)
+            template <typename Tuple, typename Predicate>
+            constexpr auto Any(Tuple&& tuple, Predicate&& pred) {
+                constexpr static const size_t tuple_size = std::tuple_size_v<std::decay_t<Tuple>>;
 
-        template <typename T>
-        struct TupleIterator<std::tuple<T>> {
-            template <typename Fn>
-            constexpr static auto Iterate(std::tuple<T> const& tpl, Fn&& fn) noexcept {
-                return fn(std::get<0u>(tpl));
+                return _Any(std::forward<Tuple&&>(tuple), std::forward<Predicate&&>(pred), std::make_index_sequence<tuple_size>());
             }
 
-
-            template <typename Fn, typename Condition>
-            constexpr static auto Iterate(std::tuple<T> const& tpl, Fn&& fn, Condition&& condition) noexcept {
-                return fn(std::get<0u>(tpl));
+            template <typename Tuple, typename Predicate, size_t... Is>
+            constexpr auto _Any(Tuple&& tuple, Predicate&& predicate, std::index_sequence<Is...>) noexcept {
+                return (predicate(std::get<Is>(tuple)) || ...);
             }
-        };
-
-        template <>
-        struct TupleIterator<std::tuple<>>;
-
-        template <typename... Ts>
-        struct TupleIterator<std::tuple<Ts...>> {
-            template <typename Fn>
-            constexpr static auto Iterate(std::tuple<Ts...> const& tpl, Fn&& fn) noexcept
-            {
-                return _IterateImpl<0u>(tpl, std::forward<Fn&&>(fn), [](auto result) { return false; });
-            }
-
-            template <typename Fn, typename Condition>
-            constexpr static auto Iterate(std::tuple<Ts...> const& tpl, Fn&& fn, Condition&& condition) noexcept
-            {
-                return _IterateImpl<0u>(tpl, std::forward<Fn&&>(fn), std::forward<Condition&&>(condition));
-            }
-
-            // Make every other use ill-formed.
-            constexpr static void Iterate(...);
-
-        private:
-            template <size_t Idx, typename Fn, typename Condition>
-            constexpr static auto _IterateImpl(std::tuple<Ts...> const& tpl, Fn&& fn, Condition&& condition) noexcept
-                -> decltype(fn(std::get<Idx>(tpl)))
-            {
-                using return_type = decltype(fn(std::get<Idx>(tpl)));
-
-                if constexpr (std::is_void_v<return_type>) {
-                    fn(std::get<Idx>(tpl));
-
-                    if constexpr (Idx + 1 < sizeof...(Ts))
-                        return _IterateImpl<Idx + 1>(tpl, std::forward<Fn&&>(fn), std::forward<Condition&&>(condition));
-                } else {
-                    return_type result { fn(std::get<Idx>(tpl)) };
-                    if (condition(result))
-                        return result;
-                    
-                    if constexpr (Idx + 1 < sizeof...(Ts))
-                        return _IterateImpl<Idx + 1>(tpl, std::forward<Fn&&>(fn), std::forward<Condition&&>(condition));
-
-                    return result;
-                }
-            }
-        };
-
-        template <typename...Ts, typename... Functions>
-        constexpr auto Iterate(std::tuple<Ts...> const& tuple, Functions&&... functions) {
-            return TupleIterator<std::tuple<Ts...>>::template Iterate(tuple, std::forward<Functions&&>(functions)...);
         }
 
-        template <typename Tuple, typename Predicate, size_t... Is>
-        constexpr static bool _Any(Tuple&& tuple, Predicate&& predicate, std::index_sequence<Is...>) noexcept {
-            return (predicate(std::get<Is>(tuple)) || ...);
+        inline namespace { // All(Tuple, Predicate) 
+            template <typename Tuple, typename Predicate>
+            constexpr auto All(Tuple&& tuple, Predicate&& pred) {
+                constexpr static const size_t tuple_size = std::tuple_size_v<std::decay_t<Tuple>>;
+
+                return _All(std::forward<Tuple&&>(tuple), std::forward<Predicate&&>(pred), std::make_index_sequence<tuple_size>());
+            }
+
+            template <typename Tuple, typename Predicate, size_t... Is>
+            constexpr void _All(Tuple&& tuple, Predicate&& predicate, std::index_sequence<Is...>) noexcept {
+                (predicate(std::get<Is>(tuple)), ...);
+            }
         }
-        
-        template <typename... Ts, typename Predicate>
-        constexpr static bool Any(std::tuple<Ts...> const& tpl, Predicate&& predicate) noexcept {
-            return _Any(tpl, std::forward<Predicate&&>(predicate), std::make_index_sequence<sizeof...(Ts)>());
+
+        inline namespace { // Iterate(Tuple, Predicate, Condition)
+            template <typename...Ts, typename Predicate, typename Condition>
+            constexpr auto Iterate(std::tuple<Ts...> const& tuple, Predicate&& pred, Condition&& cond) {
+                return _Iterate(tuple, std::forward<Predicate&&>(pred), std::forward<Condition&&>(cond));
+            }
+
+            template <typename Tuple, typename Predicate, typename Condition, size_t... Is>
+            constexpr auto _Iterate(Tuple&& tuple, Predicate&& predicate, Condition&& condition) noexcept {
+                return Any(std::forward<Tuple&&>(tuple), [&predicate, &condition](auto elem) {
+                    auto&& value = predicate(elem);
+                    if (condition(value))
+                        return value;
+
+                    return std::decay_t<decltype(value)> { };
+                });
+            }
         }
 
         // ---- std::is_reference_wrapper ----
-        namespace {
+        inline namespace {
             template <typename T> struct is_reference_wrapper : std::false_type { };
             template <typename T> struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type { };
 
@@ -247,7 +218,7 @@ namespace Brigadier {
 
         // ---- ParameterIsInput ----
         // Determines wether a parameter is parsed from the command text.
-        namespace {
+        inline namespace {
             template <typename T, typename Enable = void> struct ParameterIsInput {
                 enum { value = false };
             };
@@ -268,7 +239,7 @@ namespace Brigadier {
 
         // ---- FilterHandlerParams ----
         // Filters types of a tuple based on a conditional, returning a reduced tuple.
-        namespace {
+        inline namespace {
             template <template <class...> typename Conditional, typename Tuple> struct FilterHandlerParams;
             template <template <class...> typename Conditional, typename T, typename... Ts>
             struct FilterHandlerParams<Conditional, std::tuple<T, Ts...>> {
@@ -290,7 +261,7 @@ namespace Brigadier {
 
         // ---- ValidateParameterInfo ----
         // Validations parameter information
-        namespace {
+        inline namespace {
             template <typename Fn, typename... Ts>
             struct ValidateParameterInfo
             {
@@ -344,7 +315,7 @@ namespace Brigadier {
             { t.template NotifyParameterDescription<TEmpty>("foo"sv, std::optional<std::string_view> { }, true) } -> std::same_as<void>;
         };
 #else
-        namespace {
+        inline namespace {
             template <typename> struct SFINAE : std::true_type { };
 #define MAKE_PSEUDO_CONCEPT(CONCEPT, FNCALL)                                                             \
             template <typename T>                                                                        \
@@ -597,13 +568,11 @@ namespace Brigadier {
         constexpr BareNode(BareNode const&) = default;
         constexpr BareNode(BareNode&&) = default;
 
-        constexpr ValidationResult Validate(std::string_view& reader) const noexcept {
+        constexpr ValidationResult Validate(std::string_view reader) const noexcept {
             bool success = reader.find(_literal) == 0;
             
-            if (success) {
-                reader = reader.substr(_literal.length());
+            if (success)
                 return ValidationResult::Children;
-            }
 
             return ValidationResult::Failure;
         }
@@ -628,26 +597,23 @@ namespace Brigadier {
         constexpr CommandNode(CommandNode<Fn> const&) = default;
         constexpr CommandNode(CommandNode<Fn>&&) noexcept = default;
 
-        constexpr ValidationResult Validate(std::string_view& reader) const noexcept
+        constexpr ValidationResult Validate(std::string_view reader) const noexcept
         {
             if (reader.find(_literal) != 0)
                 return ValidationResult::Failure;
 
-            reader = reader.substr(_literal.length());;
             return ValidationResult::Execute;
         }
 
         //> Returns true if execution succeeded, false otherwise.
         template <typename S>
-        constexpr auto TryExecute(std::string_view const& reader, const S& source) const noexcept
+        constexpr auto TryExecute(std::string_view reader, const S& source) const noexcept
             -> bool
         {
-            auto mutableReader = reader;
-
             using args_t = boost::callable_traits::args_t<Fn>;
 
             bool success = true;
-            auto args { _ExtractParameters<S>(source, success, mutableReader, static_cast<args_t*>(nullptr)) };
+            auto args { _ExtractParameters<S>(source, success, reader, static_cast<args_t*>(nullptr)) };
 
             if (success)
                 std::apply(_fn, std::move(args));
@@ -679,33 +645,40 @@ namespace Brigadier {
             } else if constexpr (std::is_same_v<T, CommandNode<Fn> const&>) {
                 return std::cref(*this);
             } else if constexpr (Details::is_optional_v<T>) {
-                static_assert(Details::ParameterIsInput<decayed_type>::value, "Missing implementation of _ParameterExtractor");
-
                 using underlying_type = typename decayed_type::value_type;
 
+                static_assert(Details::ParameterIsInput<underlying_type>::value, "Missing implementation of _ParameterExtractor");
+
                 // If we already failed, fail fast
-                if (success) {
-                    std::string_view copy { reader.substr(1) };
+                if (success && reader.length() > 0) {
+                    std::string_view copy { reader };
                     auto result { _ParameterExtractor<underlying_type>::_Extract(copy) };
-                    if (result.has_value())
-                        reader = copy;
+                    if (result.has_value()) {
+                        if (copy.size() > 1)
+                            reader = copy.substr(1);
+                        else
+                            reader = copy;
+                    }
 
                     return result;
                 }
 
                 return std::optional<underlying_type> { };
             } else {
-                success = reader.length() > 1;
+                success = reader.length() > 0;
                 // If we already failed, fail fast
                 if (!success)
                     return decayed_type { };
 
                 static_assert(Details::ParameterIsInput<decayed_type>::value, "Missing implementation of _ParameterExtractor");
 
-                reader = reader.substr(1);
                 auto result { _ParameterExtractor<decayed_type>::_Extract(reader) };
-                if (result.has_value())
+                if (result.has_value()) {
+                    if (reader.size() > 1)
+                        reader = reader.substr(1);
+
                     return std::move(result.value());
+                }
 
                 success = false;
                 return decayed_type { };
@@ -753,7 +726,7 @@ namespace Brigadier {
 
         template <typename Op>
         constexpr void ForEachParameter(Op&& fn) const noexcept {
-            Details::Iterate(_parameters, std::forward<Op&&>(fn));
+            Details::All(_parameters, std::forward<Op&&>(fn));
         }
 
     private:
@@ -854,127 +827,185 @@ namespace Brigadier {
 
             constexpr auto node() const noexcept { return Base::node(); }
             constexpr auto children() const noexcept { return Base::children(); }
-            // TODO: Will this work
             constexpr TreePath<T, void> const& parent() const noexcept { return *this; }
 
             constexpr static const bool has_parent = false;
         };
 
+        template <typename T, typename C>
+        TreePath(T, C) -> TreePath<T, C>;
+
         template <typename T>
-        constexpr static auto Parse(std::string_view input, T const& root, const S& source) noexcept
+        TreePath(T) -> TreePath<T, void>;
+
+        template <typename Root>
+        constexpr static auto Parse(std::string_view input, Root&& root, const S& source) noexcept
             -> bool
         {
-            TreePath<T, void> rootPath { root };
+            return _WalkRoot<TraversalFlags::None>(TreePath { root },
+                [](auto path, std::string_view input, S const& source) -> bool {
+                    if constexpr (Details::IsBareNode<decltype(path.node())>::value)
+                        return false;
+                    else // Attempt to execute the input.
+                        return path.node().TryExecute(input, source);
+                },
+                [](auto path, std::string_view input, S const& source) -> ValidationResult {
+                    // Evaluate which path to take during traversal.
+                    return path.node().Validate(input);
+                },
+                [](auto path, std::string_view input, S const& source) {
+                    using namespace std::string_view_literals;
 
-            return _WalkPath<TreeTraversalFlags::None>(std::move(rootPath), input, [&source](auto treePath, bool& executionResult, std::string_view reader) noexcept {
-                if constexpr (!Details::IsBareNode<std::decay_t<decltype(treePath.node())>>::value) {
-                    executionResult = treePath.node().TryExecute(reader, source);
-                } else {
-                    executionResult = false;
-                }
-            });
+                    // Called as input for each child node.
+                    //   Return a string_view to the remainder of the string
+                    //   and forward the source for TryExecute.
+                    std::string_view childInput = input.length() > (path.node().literal().length() + 1)
+                        ? input.substr(path.node().literal().length() + 1)
+                        : "";
+                    return std::tuple {
+                        childInput,
+                        std::cref(source)
+                    };
+                },
+                std::tuple { input, source });
         }
 
-        template <typename T, typename U>
-        constexpr static auto PrintHelp(std::string_view input, T const& root, U& printer) noexcept
-        {
-            static_assert(Details::HasNotifyBegin<U>, "'printer' needs `void NotifyBegin()`.");
-            static_assert(Details::HasNotifyEnd<U>, "'printer' needs `void NotifyEnd()`.");
-            static_assert(Details::HasNotifyLiteral<U>, "'printer' needs `void NotifyLiteral(std::string_view)`.");
-            static_assert(Details::HasNotifyParameter<U>, "'printer' needs `void NotifyParameter(std::string_view, bool)`.");
-            static_assert(Details::HasNotifyCommandDescription<U>, "'printer' needs `void NotifyCommandDescription(std::string_view)`.");
-            static_assert(Details::HasNotifyParameterDescription<U> != Details::HasNotifyTemplateParameterDescription<U>,
-                "'printer' needs `void NotifyParameterDescription<T>(std::string_view, std::optional<std::string_view>, bool)` or a non-generic version of that method. Can't have both!");
+        template <typename Root, typename Printer>
+        constexpr static auto PrintHelp(std::string_view input, Root&& root, Printer&& printer) noexcept {
+            constexpr auto printCallback = [](auto path, Printer&& printer, auto self) -> void {
+                using node_type = std::decay_t<decltype(path.node())>;
 
-            TreePath<T, void> rootPath { root };
+                if constexpr (Details::IsSimpleCommandNode<node_type>::value || Details::IsDetailedCommandNode<node_type>::value) {
+                    printer.NotifyBeginCommand();
 
-            return _WalkPath<TreeTraversalFlags::DoNotFailValidationOnEmptyInput>(std::move(rootPath), input, [&printer](auto resolvedPath, bool& executionResult, std::string_view reader) {
-               executionResult = _PrintCallback(printer, resolvedPath); 
-            });
+                    path.Traverse([&printer](auto pathNode) noexcept -> void {
+                        static_assert(Details::IsNode<decltype(pathNode)>::value, "Traversing an ill-formed path");
+
+                        printer.NotifyLiteral(pathNode.literal());
+                    });
+
+                    if constexpr (Details::IsSimpleCommandNode<node_type>::value) {
+                        printer.NotifyParameter("parameters...", true);
+                    }
+                    else if constexpr (Details::IsDetailedCommandNode<node_type>::value) {
+                        path.node().ForEachParameter([&printer](auto parameter) noexcept -> void {
+                            printer.NotifyParameter(parameter.name(), parameter.required());
+                            });
+
+                        printer.NotifyCommandDescription(path.node().description());
+
+                        path.node().ForEachParameter([&printer](auto parameter) noexcept -> void {
+                            if constexpr (Details::HasNotifyParameterDescription<Printer>) {
+                                printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
+                            }
+                            else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
+                                printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
+                            }
+                        });
+                    }
+
+                    printer.NotifyEndCommand();
+                }
+                else if constexpr (Details::IsBareNode<node_type>::value) {
+                    // Iterate and explore each child by just giving them their literal
+                    Details::All(path.children(), [&path, &printer, &self](auto childNode) {
+                        self(path.ChainWith(childNode), std::forward<Printer&&>(printer), self);
+                    });
+                }
+            };
+
+            return _WalkRoot<TraversalFlags::AllChildren>(TreePath { root },
+                [&printCallback](auto path, std::string_view input, Printer&& printer) -> bool {
+                    printCallback(path, std::forward<Printer&&>(printer), printCallback);
+
+                    // Return false so that if we are traversing a bare node we may dig deeper
+                    return false;
+                },
+                [](auto path, std::string_view input, Printer&& printer) -> ValidationResult {
+                    ValidationResult result = path.node().Validate(input);
+
+                    // Adjust to Execute, so that we call Operation&& and can proceed to dig in available children.
+                    if (result == ValidationResult::Failure)
+                        return ValidationResult::Execute;
+
+                    return result;
+                },
+                [](auto path, std::string_view input, Printer&& printer) {
+                    std::string_view childInput = input.length() > (path.node().literal().length() + 1)
+                        ? input.substr(path.node().literal().length() + 1)
+                        : "";
+                    return std::tuple{
+                        childInput,
+                        std::forward<Printer&&>(printer)
+                    };
+                },
+                std::tuple { input, printer });
         }
 
     private:
-        enum TreeTraversalFlags : uint8_t {
-            None                            = 0x00,
-            //> If Validate(...) returns Failure, call the callback anyways if reader is also empty.
-            DoNotFailValidationOnEmptyInput = 0x01,
+        enum TraversalFlags {
+            None = 0x00,
+            AllChildren = 0x01
         };
 
-        template <typename Printer, typename Path>
-        constexpr static bool _PrintCallback(Printer&& printer, Path&& path) noexcept {
-            auto currentNode { path.node() };
+        template <TraversalFlags>
+        struct TraversalProperties;
 
-            if constexpr (Details::IsDetailedCommandNode<decltype(currentNode)>::value || Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
-                printer.NotifyBeginCommand();
-
-                path.Traverse([&printer](auto pathNode) noexcept -> void {
-                    static_assert(Details::IsNode<decltype(pathNode)>::value, "Traverse ill-formed");
-
-                    printer.NotifyLiteral(pathNode.literal());
-                });
-
-                if constexpr (Details::IsSimpleCommandNode<decltype(currentNode)>::value) {
-                    printer.NotifyParameter("parameters...", true);
-                } else { // if constexpr (Details::IsDetailedCommandNode<decltype(currentNode)>::value)
-                    currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
-                        printer.NotifyParameter(parameter.name(), parameter.required());
-                    });
-
-                    printer.NotifyCommandDescription(currentNode.description());
-
-                    currentNode.ForEachParameter([&printer](auto parameter) noexcept -> void {
-                        if constexpr (Details::HasNotifyParameterDescription<Printer>) {
-                            printer.NotifyParameterDescription(parameter.name(), parameter.description(), parameter.required());
-                        } else if constexpr (Details::HasNotifyTemplateParameterDescription<Printer>) {
-                            printer.template NotifyParameterDescription<typename decltype(parameter)::type>(parameter.name(), parameter.description(), parameter.required());
-                        }
-                    });
-                }
-
-                printer.NotifyEndCommand();
-                return true;
-            } else if constexpr (Details::IsBareNode<decltype(currentNode)>::value && std::decay_t<decltype(path)>::children_count > 0) {
-                Details::Iterate(path.children(), [&printer, &path](auto childNode) noexcept -> void {
-                    _PrintCallback(std::forward<Printer&&>(printer), path.ChainWith(childNode));
-                });
-                // TODO: probably (maybe?) a bug here?
-                return true;
+        template <>
+        struct TraversalProperties<TraversalFlags::None> {
+            template <typename Tuple, typename Operation>
+            constexpr static const auto IterateTuple(Tuple&& tuple, Operation&& operation) {
             }
+        };
 
-            return false;
+        template <TraversalFlags Flags, typename Operation, typename Filter, typename Transform, typename Args, typename... Roots>
+        constexpr static bool _WalkRoots(std::tuple<Roots...> const& roots, Operation&& operation, Filter&& filter, Transform&& transform, Args&& args) noexcept {
+            return _WalkRoots<Flags>(roots, operation, filter, transform, std::forward<Args&&>(args), std::make_index_sequence<sizeof...(Roots)>());
         }
 
-        template <TreeTraversalFlags Flags, typename Path, typename Operation>
-        constexpr static bool _WalkPath(Path&& path, std::string_view& reader, Operation&& operation, bool parentPathResult = true)
-        {
-            ValidationResult validationResult { path.node().Validate(reader) };
-            switch (validationResult) {
-                case ValidationResult::Children: {
-                    if constexpr (std::decay_t<decltype(path)>::children_count > 0) {
-                        bool childResult = Details::Iterate(path.children(), [&path, reader = reader.empty() ? reader : reader.substr(1), &operation](auto childNode) mutable noexcept {
-                            return _WalkPath<Flags>(path.ChainWith(childNode), reader, operation, true);
-                        }, [](auto pathResult) {
-                            return pathResult == true;
-                        });
+        template <TraversalFlags Flags, typename Operation, typename Filter, typename Transform, typename Args, typename... Roots, size_t... Is>
+        constexpr static bool _WalkRoots(std::tuple<Roots...> const& roots, Operation&& operation, Filter&& filter, Transform&& transform, Args&& args, std::index_sequence<Is...>) noexcept {
+            return (_WalkRoot<Flags>(TreePath { std::get<Is>(roots) }, operation, filter, transform, std::forward<Args&&>(args)) || ...);
+        }
 
-                        return childResult;
+        template <TraversalFlags Flags, typename Child, typename Parent, typename Operation, typename Filter, typename Transform, typename Args>
+        constexpr static auto _WalkRoot(TreePath<Child, Parent> const& root, Operation&& operation, Filter&& filter, Transform&& transform, Args&& args) noexcept 
+            -> bool
+        {
+            auto executionArguments = std::tuple_cat(std::tuple { root }, args);
+            ValidationResult validationResult = std::apply(filter, executionArguments);
+            switch (validationResult) {
+                case ValidationResult::Children:
+                {
+                    auto childrenParameters = std::apply(transform, executionArguments);
+
+                    auto childrenHandler = [&](auto childNode) -> bool {
+                        return _WalkRoot<Flags>(root.ChainWith(childNode),
+                            std::forward<Operation&&>(operation),
+                            std::forward<Filter&&>(filter),
+                            std::forward<Transform&&>(transform),
+                            childrenParameters);
+                    };
+
+                    if constexpr ((Flags & TraversalFlags::AllChildren) != 0) {
+                        Details::All(root.children(), childrenHandler);
+                        return true;
                     } else {
-                        return false;
+                        return Details::Any(root.children(), childrenHandler);
                     }
+
+                    // Shut up false positive warnings
+                    break;
                 }
-                case ValidationResult::Failure: {
-                    bool executionResult = false;
-                    if constexpr ((Flags & TreeTraversalFlags::DoNotFailValidationOnEmptyInput) != 0) {
-                        if (reader.empty())
-                            operation(path.parent(), executionResult, reader);
-                    }
-                    return executionResult;
-                }
-                case ValidationResult::Execute: {
-                    bool executionResult = true;
-                    operation(path, executionResult, reader);
-                    return executionResult;
-                }
+                case ValidationResult::Failure:
+                    return false;
+                case ValidationResult::Execute:
+                    std::apply(operation,
+                        std::tuple_cat(std::tuple { root }, 
+                            std::apply(transform, std::tuple_cat(std::tuple { root }, args))
+                        )
+                    );
+                    return true;
                 default:
                     BRIGADIER_UNREACHABLE;
             }
