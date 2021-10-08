@@ -5,7 +5,7 @@ A simple command parser.
 ## Requirements
 
 * C++17 or newer
-* Boost (Boost.CallableTraits, Boost.Range)
+* Boost (Boost.CallableTraits)
 * fmt (or `<format>`)
 
 ## Usage
@@ -141,10 +141,10 @@ Here are some completely irrelevant benchmarks, done with [Nanobench](https://gi
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              208.23 |        4,802,385.84 |    1.3% |      2.53 | `Parse(foo foo 42 "bar\"itone", tree, source)`
-|               92.37 |       10,826,472.47 |    0.6% |      1.11 | `Parse(foo bar biz 42, tree, source)`
-|               97.85 |       10,219,706.00 |    0.6% |      1.17 | `Parse(foo bar biz "foo", tree, source)`
-|               46.67 |       21,428,415.21 |    1.3% |      0.56 | `PrintHelp("foo foo", tree, printer)`
+|              228.45 |        4,377,258.94 |    3.0% |      2.78 | `foo foo 42 "bar\"itone"`
+|              100.23 |        9,977,433.52 |    2.0% |      1.19 | `foo bar biz 42`
+|              160.88 |        6,215,815.14 |    1.8% |      1.93 | `foo bar biz "foo"`
+|               60.12 |       16,633,191.67 |    3.8% |      0.71 | `PrintHelp("foo foo", tree, printer)`
 
 The help print test is mostly a no-op but shows the cost of traversing a simple tree.
 
