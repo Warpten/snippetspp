@@ -1,6 +1,12 @@
 # Brigadier
 
-A simple command parser.
+A single-header header-only library for command parsing.
+
+## Features
+
+- ✔️ Optional parameters (via `std::optional<T>`)
+- ✔️ Command help
+- ❌ `std::variant<Ts...>` parameters
 
 ## Requirements
 
@@ -10,90 +16,114 @@ A simple command parser.
 
 ## Usage
 
-### Parse an input
+### Declaring a command tree
 
+Brigadier offers various facilities for creating a command tree. A command tree is constituted of a node containing any number of children nodes. A node can be executable, in which case it may not have subnodes.
+
+Given the sample command `hello world`, `hello` would be a simple node, and `world` would be an executable node:
 ```cpp
-constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
+// Registers
+//  > hello world
+constexpr static const auto tree = Brigadier::Node("hello")
     .Then(
-        Brigadier::Command(
-            "foo",
-            "This command does X thing",
-            [](S const&, uint32_t, std::optional<Brigadier::QuotedString>) noexcept { },
-            Brigadier::ParameterMeta<uint32_t> { "nodeIndex" },
-            Brigadier::ParameterMeta<std::optional<Brigadier::QuotedString>> { "path" }
-        ),
-        Brigadier::Node("bar")
-            .Then(
-                Brigadier::Command("biz", [](uint32_t) noexcept { }),
-                Brigadier::Command("baz", [](uint32_t) noexcept { }),
-                Brigadier::Command("buz", [](uint32_t) noexcept { }),
-            )
+        Brigadier::Command("world", []() noexcept { })
     );
-
-int main() {
-    S source { };
-    Brigadier::StringReader reader(command0);
-    // parse will be true if parsing was successful.
-    auto parse = Brigadier::TreeParser<S>::Parse(reader, tree, source);
-}
 ```
 
-The above code registers 4 commands:
-
+If you have multiple commands that share no common node, declare your tree as a tuple:
+```cpp
+// Registers
+//  > hello world
+//  > goodbye world
+constexpr static const auto tree = std::tuple {
+    Brigadier::Node("hello")
+        .Then(
+            Brigadier::Command("world", []() noexcept { })
+        ),
+    Brigadier::Node("goodbye")
+        .Then(
+            Brigadier::Command("world", []() noexcept { })
+        )
+};
 ```
-> foo foo $x
-> foo bar biz $x
-> foo bar baz $x
-> foo bar buz $x
-```
 
-### Print command help
+### Help
 
-`Brigadier::TreeParser<S>::PrintHelp` expects a generic `Printer` type, which is expected to have the following contract:
+Brigadier offers out-of-the-box support for command help, via `Brigadier::TreeParser<S>::PrintHelp`. Pass in a (potentially) incomplete command input, your tree, and an instance of what Brigadier calls a <span style="color:blue">print listener</span>. A <span style="color:blue">print listener</span> is a type that matches the following scaffolding code:
 
 ```cpp
-struct
+struct PrintListener
 {
-    void NotifyBeginCommand() { } // ⚠️ Required
-    void NotifyEndCommand() { } // ⚠️ Required
+    void NotifyBeginCommand() { }
+    void NotifyEndCommand() { }
 
-    void NotifyLiteral(std::string_view literal) {  } // ⚠️ Required
-    void NotifyParameter(std::string_view name, bool required) { } // ⚠️ Required
-    void NotifyCommandDescription(std::string_view description) { } // ⚠️ Required
-    
-    
+    void NotifyLiteral(std::string_view literal) { }
+    void NotifyParameter(std::string_view name, bool required) {  }
+    void NotifyCommandDescription(std::string_view description) { }
+
     template <typename T>
     void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
     // -- or -- 
-    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
+    // void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
     // The former will pass parameter type through T.
 };
 ```
 
-Pass an instance of a type matching this interface to the `PrintHelp` method. A basic output to console could look like this when executed against the command tree shown above:
-```
-> PrintHelp("foo foo", tree, printer);
-
-foo foo [nodeIndex] <path> 
-  This command does X thing
-  - nodeIndex (Required) unsigned int
-  - path (Optional) std::optional<Brigadier::QuotedString>
-
-> PrintHelp("foo bar", tree, printer);
-
-foo bar biz [parameters...] 
-foo bar boz [parameters...] 
-foo bar buz [parameters...] 
-```
-Example of a more involved usage:
+This is especially useful for a typical complex implementation of the `help` command, which Brigadier does not provide for you. It gives access to the complete lexical description of a command, and can leads to cool stuff like this:
 
 ![oYafEu9EDC](https://user-images.githubusercontent.com/563936/134428322-ff47065e-4a48-4999-9d0e-6ae3b75fee61.gif)
 
-## Features
+The astute reader may notice the methods `NotifyParameter`, `NotifyCommandDescription`, and `NotifyParameterDescription`, but `Brigadier::Command` offers no help in this regard. As it turns out, Brigadier allows you to declare commands as "detailed" command nodes, allowing you to provide a description for the command and each of its parameter. If your command is not registered as a detailed command, Brigadier will call `NotifyParameter("parameters", true)`. `NotifyParameterDescription` and `NotifyCommandDescription` will not be called.
 
-- ✔️ Optional parameters (via `std::optional<T>`)
-- ✔️ Command help
-- ❌ `std::variant<Ts...>` parameters
+### A more detailed command node.
+
+`Brigadier::Command` has an extra overload, which takes in the description of the command, and information about its parameters.
+
+```cpp
+        Brigadier::Command(
+            "foo",
+            /* description */ "This command does X thing",
+            [](uint32_t nodeIndex, std::optional<Brigadier::QuotedString> path) noexcept { },
+            Brigadier::ParameterMeta<uint32_t> { "nodeIndex", "Description of the 'nodeIndex' parameter" },
+            Brigadier::ParameterMeta<std::optional<Brigadier::QuotedString>> { "path", "Description of the 'path' parameter" }
+        )
+```
+
+With only that information, Brigadier will let you print detailed help prompts to your user.
+
+ℹ Assuming reflection makes it into the language, Brigadier may or may not get updated to support it. No guarantees.
+
+### Parameters
+
+Brigadier offers out-of-the-box support for `(u)int(8|16|32|64)_t`, `float`, `double`, and provides three string-like types: `Brigadier::Word`, `Brigadier::QuotedString` and `Brigadier::GreedyString`. `Word` is effectively `[a-zA-Z]+`. `QuotedString`, on the other hand, allows any character as long as it is enclosed in either single or double quotes, allowing escape sequences. Finally, `GreedyString` is a string to the end of the input.
+
+Brigadier also allows you to implement parsing of your own custom parameter types. Provide an explicit specialization of `Brigadier::_ParameterExtractor`:
+
+```cpp
+namespace Brigadier {
+    template <>
+    struct _ParameterExtractor<MyType, void> {
+        static auto _Extract(std::string_view& reader) noexcept -> std::optional<MyType> {
+            // IMplementation ...
+        }
+    };
+}
+```
+
+Notice that this function must mutate `reader` so that it effectively points to the character after the parameter you're parsing. See the source for examples.
+
+Finally, Brigadier supports all variations of `std::optional<T>` for any of the types above, including your own, with no extra work.
+
+### Parsing
+
+The following sample code shows how to parse a command. `parseResult` will be true if any command was successful in processing the input.
+
+```cpp
+int main() {
+    S source { };
+    bool parseResult = Brigadier::TreeParser<S>::Parse("foo foo 42 \"path\"", tree, source);
+}
+```
 
 ## API
 
@@ -117,100 +147,19 @@ This creates an object representing an execution point of the command tree.
   One or more of `Brigadier::ParameterMeta<T>`. Must match the order and types of parameters of `fn` that are extracted from the command.  
   ⚠️ Types are there to ensure any change to the callback is mirrored on the parameter metadata, and vice-versa.
 
-### `_ParameterExtractor<S, T, Enable = void>`
-
-This object is the main extendability point of Brigadier. It allows you to define your own parameter types and how they should be parsed. The contract for this object looks as follows:
-
-```cpp
-template <typename T>
-struct _ParameterExtractor<T> {
-    //> Returns effectively T. For references, wrap in std::ref/std::cref.
-    //> *Always* return an std::optional.
-    template <typename Fn>
-    static auto _Extract(std::string_view& reader) noexcept;
-};
-```
-
 ### Why 'Brigadier' ?
 
 This was ~~stolen from~~ inspired by Mojang's [eponymous library](https://github.com/Mojang/brigadier). 
 
 ### I want benchmarks
 
-Here are some completely irrelevant benchmarks, done with [Nanobench](https://github.com/martinus/nanobench), with numbers you should not care about.
+Here are some completely irrelevant benchmarks, done with [Nanobench](https://github.com/martinus/nanobench), with numbers you should not care about, on a system that is busy doing other things.
 
 |               ns/op |                op/s |    err% |     total | benchmark
 |--------------------:|--------------------:|--------:|----------:|:----------
-|              228.45 |        4,377,258.94 |    3.0% |      2.78 | `foo foo 42 "bar\"itone"`
-|              100.23 |        9,977,433.52 |    2.0% |      1.19 | `foo bar biz 42`
-|              160.88 |        6,215,815.14 |    1.8% |      1.93 | `foo bar biz "foo"`
-|               60.12 |       16,633,191.67 |    3.8% |      0.71 | `PrintHelp("foo foo", tree, printer)`
+|              225.58 |        4,433,058.50 |    2.2% |      2.68 | `foo foo 42 "bar\"itone"`
+|              101.90 |        9,813,696.78 |    2.7% |      1.23 | `foo bar biz 42`
+|              156.66 |        6,383,308.66 |    4.1% |      1.88 | `foo bar buz "foo"`
+|               56.98 |       17,549,555.56 |    3.8% |      0.69 | `PrintHelp("foo foo", tree, printer)`
 
-The help print test is mostly a no-op but shows the cost of traversing a simple tree.
-
-```cpp
-
-struct HelpPrinter
-{
-    void NotifyBeginCommand() { } // ⚠️ Required
-    void NotifyEndCommand() { } // ⚠️ Required
-
-    void NotifyLiteral(std::string_view literal) {  } // ⚠️ Required
-    void NotifyParameter(std::string_view name, bool required) { } // ⚠️ Required
-    void NotifyCommandDescription(std::string_view description) { } // ⚠️ Required
-    
-    
-    template <typename T>
-    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
-    // -- or -- 
-    void NotifyParameterDescription(std::string_view name, std::optional<std::string_view> description, bool required) { }
-    // The former will pass parameter type through T.
-};
-
-constexpr static const Brigadier::Tree tree = Brigadier::Node("foo")
-    .Then(
-        Brigadier::Command(
-            "foo",
-            "This command does X thing",
-            [](S const&, uint32_t, std::optional<Brigadier::QuotedString>) noexcept { },
-            Brigadier::ParameterMeta<uint32_t> { "nodeIndex" },
-            Brigadier::ParameterMeta<std::optional<Brigadier::QuotedString>> { "path" }
-        ),
-        Brigadier::Node("bar")
-            .Then(
-                // This is doable but not recommended, since ordering matters.
-                Brigadier::Command("biz", [](uint32_t) noexcept { }),
-                Brigadier::Command("biz", [](S&, Brigadier::QuotedString) noexcept { })
-            )
-    );
-
-constexpr static const char command0[] = "foo foo 42 \"bar\\\"itone\"";
-constexpr static const char command1[] = "foo bar biz 42";
-constexpr static const char command2[] = "foo bar biz \"foo\"";
-
-int main() {
-    S source { };
-    auto b = ankerl::nanobench::Bench().minEpochIterations(1000000);
-    
-    auto declareParseBench = [&b, &source](const char* command) {
-        b.run(command, [&]() {
-            ankerl::nanobench::doNotOptimizeAway(
-                Brigadier::TreeParser<S>::Parse(command, tree, source)
-            );
-        }); 
-    };
-
-    declareParseBench(command0);
-    declareParseBench(command1);
-    declareParseBench(command2);
-    
-    HelpPrinter printer;
-    b.run("PrintHelp(\"foo foo\", tree, printer)", [&]() {
-        ankerl::nanobench::doNotOptimizeAway(
-            (Brigadier::TreeParser<S>::PrintHelp("foo foo", tree, printer), 0)
-        );
-    });
-    
-    return EXIT_SUCCESS;
-}
-```
+The help print test is mostly a no-op (`printer` effectively does nothing) but shows the cost of traversing a simple tree.
