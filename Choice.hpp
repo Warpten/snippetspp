@@ -181,7 +181,7 @@ namespace Choice {
         /**
          * Sets the union to the uninitialized state. Zero-initializes the union.
          */
-        [[deprecated("Use Assign(Choice::Uninitialized { })."]] void Clear() noexcept(NOEXCEPT_DEALLOCATION_TEST) {
+        [[deprecated("Use Assign(Choice::Uninitialized { }).")]] void Clear() noexcept(NOEXCEPT_DEALLOCATION_TEST) {
             Assign(Uninitialized{ });
         }
 
