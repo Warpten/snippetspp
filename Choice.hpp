@@ -25,7 +25,7 @@
 #include <variant>
 #include <utility>
 
-#include <shared/Traits.hpp> // https://github.com/Warpten/snippetspp/blob/main/shared/Traits.hpp
+// #include <shared/Traits.hpp> // https://github.com/Warpten/snippetspp/blob/main/shared/Traits.hpp
 
 /**
  * A glorified union (sum type). It has some limitations compared to std::variant:
