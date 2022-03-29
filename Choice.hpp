@@ -56,17 +56,18 @@ namespace Choice {
         /***********************************************************/
 
         /**
+         * Obtains the type associated to a tag.
+         */
+        template <typename...> struct _TypeOfTag { };
+        template <auto E, typename T> struct _TypeOfTag<Of<E, T>> { using type = T; };
+        template <typename T> using TypeOfType = typename _TypeOfTag<T>::type;
+
+        /**
          * Does the given tag correspond to the given type?
          */
         template <typename...> struct IsTagForType { };
         template <typename Tag, typename Type>
-        struct IsTagForType<Tag, Type> : std::is_same<Type, typename Tag::value_type> { };
-
-        /**
-         * Obtains the type associated to a tag.
-         */
-        template <typename...> struct TypeOfTag { };
-        template <auto E, typename T> struct TypeOfTag<Of<E, T>> { using type = T; };
+        struct IsTagForType<Tag, Type> : std::is_same<Type, TypeOfTag<Tag>> { };
 
         /***********************************************************/
 
@@ -76,7 +77,7 @@ namespace Choice {
         template <typename...> struct NotTriviallyConstructible;
         template <typename T>
         struct NotTriviallyConstructible<T>
-            : std::negation<std::is_trivially_constructible<typename TypeOfTag<T>::type>> { };
+            : std::negation<std::is_trivially_constructible<TypeOfTag<T>>> { };
 
         /**
          * Filter user to eliminate but for trivially destructible types.
@@ -84,7 +85,7 @@ namespace Choice {
         template <typename...> struct NotTriviallyDestructible;
         template <typename T>
         struct NotTriviallyDestructible<T>
-            : std::negation<std::is_trivially_destructible<typename TypeOfTag<T>::type>> { };
+            : std::negation<std::is_trivially_destructible<TypeOfTag<T>>> { };
 
         /***********************************************************/
 
@@ -123,11 +124,11 @@ namespace Choice {
             Ts...
         >::template Execute<>;
         
-        template <typename... Tags>
-        auto TryAllocate(E selection, Traits::TypeSequence<Tags...>)
-            noexcept(noexcept((Tags::TryAllocate(std::declval<E>(), std::declval<std::byte*>()) || ...)))
+        template <typename... Tags, typename... Args>
+        auto TryAllocate(E selection, Traits::TypeSequence<Tags...>, Args&&... args)
+            noexcept(noexcept((Tags::TryAllocate(std::declval<E>(), std::declval<std::byte*>(), std::declval<Args>()...) || ...)))
         {
-            return (Tags::TryAllocate(selection, _storage) || ...);
+            return (Tags::TryAllocate(selection, _storage, std::forward<Args&&>(args)...) || ...);
         }
 
         template <typename... Tags>
@@ -138,31 +139,29 @@ namespace Choice {
         }
 
     public:
-        static_assert(
-            !std::is_convertible_v<E, int>&& std::is_enum_v<E>,
-            "Unions can only accept strongly typed enumerations."
-        );
+        static_assert(!std::is_convertible_v<E, int>&& std::is_enum_v<E>,
+            "Unions can only accept strongly typed enumerations.");
 
         constexpr static const size_t alternative_count = sizeof...(Ts);
 
         using key_type = E;
-        using value_types = std::tuple<typename Utils::TypeOfTag<Ts>::type...>; // TODO: TypeSequence?
+        using value_types = Utils::TypeSequence<Utils::TypeOfTag<Ts>...>;
 
         template <E K2, typename T2, typename = std::enable_if_t<((K2 != Ts::key) && ...)>>
         using Or = Union<E,
-            Of<Ts::key, typename Utils::TypeOfTag<Ts>::type>...,
+            Of<Ts::key, Utils::TypeOfTag<Ts>>...,
             Of<K2, T2>
         >;
 
         /**
          * Constructs the union in the uninitialized state.
          */
-        constexpr explicit Union(Uninitialized) noexcept {
+        constexpr explicit Union(Uninitialized) noexcept : _storage{} {
             // Magic compiler value slightly modified. Hopefully no one ever needs that specific tag.
             _selection = static_cast<E>(0xCDCDCDCF);
         }
 
-#define NOEXCEPT_ALLOCATION_TEST   noexcept(TryAllocate(std::declval<E>(), std::declval<non_trivially_constructible_sequence>()))
+#define NOEXCEPT_ALLOCATION_TEST(...) noexcept(TryAllocate(std::declval<E>(), std::declval<non_trivially_constructible_sequence>(), __VA_ARGS__))
 #define NOEXCEPT_DEALLOCATION_TEST noexcept(TryFree(std::declval<E>(), std::declval<non_trivially_destructible_sequence>()))
 
         /**
@@ -170,8 +169,9 @@ namespace Choice {
          * If that type is trivially constructible, the value is zero-initialized. Otherwise,
          * its parameterless constructor is called.
          */
-        constexpr explicit Union(E selection) noexcept(NOEXCEPT_ALLOCATION_TEST) {
-            Assign(selection);
+        template <typename... Args>
+        constexpr Union(E selection, Args&&... args) noexcept(NOEXCEPT_ALLOCATION_TEST(std::declval<Args>()...)) {
+            Assign(selection, std::forward<Args&&>(args)...);
         }
         
         ~Union() noexcept(NOEXCEPT_DEALLOCATION_TEST) {
@@ -190,7 +190,7 @@ namespace Choice {
          */
         void Assign(Uninitialized) noexcept(NOEXCEPT_DEALLOCATION_TEST) {
             TryFree(_selection, non_trivially_destructible_sequence{});
-            _storage = { 0 };
+            std::memset(_storage, 0, sizeof(_storage) / sizeof(_storage[0]));
 
             _selection = static_cast<E>(0xCDCDCDCF);
         }
@@ -199,13 +199,14 @@ namespace Choice {
          * Assigns the value associated with the enumeration. If the union is not currently in the
          * uninitialized state, destroys the previous value.
          */
-        void Assign(E selection) noexcept(NOEXCEPT_DEALLOCATION_TEST && NOEXCEPT_ALLOCATION_TEST) {
+        template <typename... Args>
+        void Assign(E selection, Args&&... args) noexcept(NOEXCEPT_DEALLOCATION_TEST && NOEXCEPT_ALLOCATION_TEST(std::declval<Args>()...)) {
             assert(((selection == Ts::key) || ...) && "Attempt to initialize an union with an enumeration with no known type associated to it.");
 
             if (IsInitialized())
                 Assign(Uninitialized{ });
 
-            TryAllocate(selection, non_trivially_constructible_sequence{});
+            TryAllocate(selection, non_trivially_constructible_sequence{}, std::forward<Args&&>(args)...);
             _selection = selection;
         }
 
@@ -237,7 +238,7 @@ namespace Choice {
                         typename Traits::CallableTraits<Vs>::template Argument<0>
                     >
                 >...
-            >; // This is a TypeSequence<TypeSequence<...>...> for each type of the union.
+            >; // This is a TypeSequence<TypeSequence<...>...> for each Callable.
                // Each element of the outer sequence is a collection of tags that fit the
                // corresponding n-th visitor.
 
@@ -274,7 +275,7 @@ namespace Choice {
                 Utils::DispatchInvoke(visitor, *UnsafeAccess<
                     Traits::Head<
                         Traits::TypeSequence<
-                            typename Utils::TypeOfTag<Tags>::type...
+                            Utils::TypeOfTag<Tags>::type...
                         >
                     >
                 >(), _selection);
@@ -288,7 +289,7 @@ namespace Choice {
         std::byte* data() noexcept { return &_storage[0]; }
 
         E _selection = {};
-        alignas(typename Utils::TypeOfTag<Ts>::type...) std::byte _storage[std::max({ sizeof(typename Utils::TypeOfTag<Ts>::type)... })] = { };
+        alignas(Utils::TypeOfTag<Ts>...) std::byte _storage[std::max({ sizeof(Utils::TypeOfTag<Ts>)... })] = { };
     };
 
 #undef MAKE_LVALUE
@@ -301,12 +302,20 @@ namespace Choice {
         template <decltype(K) K2, typename T2, typename = std::enable_if_t<K != K2>>
         using Or = Union<decltype(K), Of<K, T>, Of<K2, T2>>;
 
-        [[nodiscard]] static bool TryAllocate(decltype(K) selection, std::byte* storage) noexcept (noexcept(T{})) {
+        template <typename... Args>
+        [[nodiscard]] static bool TryAllocate(decltype(K) selection, std::byte* storage, Args&&... args)
+            noexcept (noexcept(T{})) 
+        {
             if (selection != K)
                 return false;
-
-            T* instance = new (storage) T(); // placement-new
-            return instance != nullptr;
+            
+            if constexpr (std::is_constructible_v<T, Args...>) {
+                T* instance = new (storage) T(std::forward<Args&&>(args)...);
+                return instance != nullptr;
+            } else {
+                T* instance = new (storage) T();
+                return instance != nullptr;
+            }
         }
 
         [[nodiscard]] static bool TryFree(decltype(K) selection, std::byte* storage) noexcept(std::is_nothrow_destructible_v<T>) {
